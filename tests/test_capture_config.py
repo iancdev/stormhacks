@@ -54,6 +54,17 @@ class RecorderParityTests(unittest.TestCase):
     def test_no_mask_resize_matches_recorder(self):
         self.check_parity({"monitor": 0, "crop": [0, 0, 960, 301], "save_width": 320, "masks": []})
 
+    def test_recorder_hud_patch_is_not_part_of_model_image(self):
+        raw = {"monitor": 0, "crop": [10, 20, 30, 30], "save_width": 10,
+               "masks": [], "hud_box": [40, 50, 46, 57]}
+        with_hud = self.check_parity(raw)
+        config = CaptureConfig.from_dict(raw)
+        self.assertEqual(config.region, (10, 20, 30, 30))
+        self.assertEqual(config.hud_box, (40, 50, 46, 57))
+        raw["hud_box"] = None
+        without_hud = self.check_parity(raw)
+        np.testing.assert_array_equal(with_hud, without_hud)
+
     def test_even_height_rounding_ties_match_recorder(self):
         for crop_height, expected in ((5, 4), (7, 8), (9, 8), (11, 12)):
             raw = {"monitor": 0, "crop": [0, 0, 4, crop_height], "save_width": 4, "masks": []}
@@ -108,6 +119,11 @@ class ConfigValidationTests(unittest.TestCase):
                     {"crop": [0, 0, 4, 4], "save_witdh": 320}):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 CaptureConfig.from_dict(raw)
+
+    def test_malformed_hud_patch_is_rejected(self):
+        for box in ([0, 0, 1], [0, 0, 0, 2], [-1, 0, 2, 2], [0, 0, 2.5, 2], "hud"):
+            with self.subTest(box=box), self.assertRaises(ValueError):
+                CaptureConfig.from_dict({"crop": [0, 0, 4, 4], "hud_box": box})
 
     def test_non_integer_and_nonfinite_configuration_rejected(self):
         for invalid in (True, 3.0, float("nan"), float("inf"), "3", None):

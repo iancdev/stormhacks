@@ -38,11 +38,15 @@ class CaptureConfig:
     output_idx: int = 0
     masks: tuple[tuple[int, int, int, int], ...] = ()
     save_width: int = 320
+    # Recorder-only synchronization patch; never included in the model road view.
+    hud_box: tuple[int, int, int, int] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "region", _box(self.region, "crop"))
         _integer(self.output_idx, "monitor")
         _integer(self.save_width, "save_width", minimum=1)
+        if self.hud_box is not None:
+            object.__setattr__(self, "hud_box", _box(self.hud_box, "hud_box"))
         if not isinstance(self.masks, (list, tuple)):
             raise ValueError("masks must be a list of absolute screen rectangles")
         object.__setattr__(self, "masks", tuple(
@@ -58,13 +62,14 @@ class CaptureConfig:
     def from_dict(cls, config):
         if not isinstance(config, dict):
             raise ValueError("capture config must be a JSON object")
-        unknown = set(config) - {"monitor", "crop", "masks", "save_width"}
+        unknown = set(config) - {"monitor", "crop", "masks", "save_width", "hud_box"}
         if unknown:
             raise ValueError("unknown capture config fields: " + ", ".join(sorted(map(str, unknown))))
         if config.get("crop") is None:
             raise ValueError("capture config needs a crop; run python record.py setup first")
         return cls(region=config["crop"], output_idx=config.get("monitor", 0),
-                   masks=config.get("masks", []), save_width=config.get("save_width", 320))
+                   masks=config.get("masks", []), save_width=config.get("save_width", 320),
+                   hud_box=config.get("hud_box"))
 
     @classmethod
     def from_json(cls, path):
