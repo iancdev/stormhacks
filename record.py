@@ -6,6 +6,7 @@ Run from the activated venv, in this order:
     python record.py setup              # grab a screen while driving, drag the crop + mask boxes
     python record.py preview            # grab a fresh screen and show what will be saved
     python record.py record             # record frames + steering/gas/brake (Ctrl+C to stop)
+    python record.py wheel              # check the TMX readout (RawInput, leaves Forza's FFB alone)
 
 Options:
     setup/preview --image PATH          # use a saved screenshot instead of grabbing the screen
@@ -241,6 +242,10 @@ class WheelReader(threading.Thread):
     def _run(self):
         import sdl2
         sdl2.SDL_SetHint(sdl2.SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, b"1")
+        # Read the wheel through RawInput, never DirectInput: SDL's DirectInput backend acquires
+        # force-feedback wheels exclusively, which steals the TMX motor from Forza (FFB goes dead).
+        sdl2.SDL_SetHint(sdl2.SDL_HINT_DIRECTINPUT_ENABLED, b"0")
+        sdl2.SDL_SetHint(sdl2.SDL_HINT_JOYSTICK_RAWINPUT, b"1")
         if sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK) != 0:
             raise RuntimeError("SDL init failed: " + sdl2.SDL_GetError().decode())
         js = None
@@ -513,6 +518,37 @@ def cmd_record(args):
               f"max {report['max_ms']}, {report['over_2x']} gap(s) > {2000 / args.fps:.0f} ms")
 
 
+def cmd_wheel(args):
+    """Show what the recorder reads from the TMX, and the range each axis covered."""
+    wheel = WheelReader(False)
+    wheel.start()
+    wheel.ready.wait(5)
+    if wheel.error or wheel.latest is None:
+        sys.exit(f"Wheel error: {wheel.error or 'no reading within 5 s'}")
+    print("Turn the wheel fully both ways, press each pedal fully, press any buttons.\n"
+          "Works with Forza focused too (check the ranges afterwards). Ctrl+C to stop.\n")
+    lo, hi, seen = [32767] * 3, [-32768] * 3, set()
+    try:
+        while True:
+            _, *raw = wheel.latest
+            lo = [min(a, b) for a, b in zip(lo, raw)]
+            hi = [max(a, b) for a, b in zip(hi, raw)]
+            seen |= wheel.buttons
+            steer, brake, gas = raw
+            print(f"\rsteer {steer:+6d} ({steer / STEER_UNITS_PER_DEG:+6.1f} deg)  "
+                  f"brake {brake:+6d} ({(32767 - brake) / 65535:4.2f})  gas {gas:+6d} ({(32767 - gas) / 65535:4.2f})  "
+                  f"buttons {sorted(wheel.buttons)}      ", end="", flush=True)
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        pass
+    wheel.stop.set()
+    wheel.join(2)
+    print("\n\nRange seen (expect steer about -32768..32767, pedals +32767 released .. -32768 floored):")
+    for name, a, b in zip(("steer", "brake", "gas"), lo, hi):
+        print(f"  {name:5s} {a:+6d} .. {b:+6d}")
+    print(f"  buttons pressed: {sorted(seen)}")
+
+
 def gap_report(times, fps):
     gaps = [(b[1] - a[1]) * 1000 for a, b in zip(times, times[1:]) if a[0] == b[0]]
     if not gaps:
@@ -543,8 +579,9 @@ def main():
                     help="seconds of frames thrown away on a rewind")
     rp.add_argument("--no-auto-rewind", action="store_true",
                     help="turn off the race-clock rewind watchdog (button only)")
+    sub.add_parser("wheel", help="live TMX readout as the recorder sees it (RawInput)")
     args = p.parse_args()
-    {"setup": cmd_setup, "preview": cmd_preview, "record": cmd_record}[args.cmd](args)
+    {"setup": cmd_setup, "preview": cmd_preview, "record": cmd_record, "wheel": cmd_wheel}[args.cmd](args)
 
 
 if __name__ == "__main__":
