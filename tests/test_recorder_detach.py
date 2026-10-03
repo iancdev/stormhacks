@@ -24,11 +24,14 @@ def record():
 def test_detach_invalidates_warmed_reader_before_cleanup(record, monkeypatch, when):
     reader = record.WheelReader(vjoy=True)
     state = {"attached": True, "polls": 0, "clocks": 0, "waits": 0,
-             "closed": False, "quit": False}
+             "closed": False, "quit": False, "opened": False, "discovery_updates": 0}
     outputs = []
     invalidated_at_cleanup = []
 
     def update():
+        if not state["opened"]:
+            state["discovery_updates"] += 1
+            return
         state["polls"] += 1
         assert state["polls"] <= 3, "detached reader kept polling"
 
@@ -45,6 +48,7 @@ def test_detach_invalidates_warmed_reader_before_cleanup(record, monkeypatch, wh
     def wait(seconds):
         state["waits"] += 1
         if state["waits"] == 2:
+            assert reader.buttons == frozenset({2})
             assert reader.live
             assert reader.latest_ns == (2_000_000, 730, 32767, -32768)
             if when == "before_poll":
@@ -55,12 +59,19 @@ def test_detach_invalidates_warmed_reader_before_cleanup(record, monkeypatch, wh
         if not state["attached"]:
             invalidated_at_cleanup.append((reader.live, reader.latest, reader.latest_ns, reader.error))
 
+    def open_wheel(index):
+        state["opened"] = True
+        return object()
+
+    hints = []
     reader.stop = SimpleNamespace(is_set=lambda: False, wait=wait)
     sdl = SimpleNamespace(
         SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS=b"background", SDL_INIT_JOYSTICK=1,
-        SDL_SetHint=lambda *args: None, SDL_Init=lambda *args: 0,
+        SDL_HINT_DIRECTINPUT_ENABLED=b"directinput", SDL_HINT_JOYSTICK_RAWINPUT=b"rawinput",
+        SDL_SetHint=lambda *args: hints.append(args), SDL_Init=lambda *args: 0,
         SDL_NumJoysticks=lambda: 1, SDL_JoystickNameForIndex=lambda index: b"Thrustmaster TMX",
-        SDL_JoystickOpen=lambda index: object(),
+        SDL_JoystickOpen=open_wheel,
+        SDL_JoystickNumButtons=lambda handle: 3, SDL_JoystickGetButton=lambda handle, index: index == 2,
         SDL_JoystickGetAttached=lambda handle: state["attached"],
         SDL_JoystickUpdate=update, SDL_JoystickGetAxis=axis,
         SDL_JoystickClose=lambda handle: state.update(closed=True),
@@ -70,7 +81,7 @@ def test_detach_invalidates_warmed_reader_before_cleanup(record, monkeypatch, wh
     monkeypatch.setitem(sys.modules, "pyvjoy", SimpleNamespace(
         VJoyDevice=lambda device_id: SimpleNamespace(set_axis=set_axis),
         HID_USAGE_X="X", HID_USAGE_Y="Y", HID_USAGE_Z="Z"))
-    monkeypatch.setattr(record, "time", SimpleNamespace(perf_counter_ns=clock))
+    monkeypatch.setattr(record, "time", SimpleNamespace(perf_counter_ns=clock, perf_counter=lambda: 1.0, sleep=lambda seconds: None))
 
     reader.run()
 
@@ -78,6 +89,9 @@ def test_detach_invalidates_warmed_reader_before_cleanup(record, monkeypatch, wh
     assert not reader.live and reader.latest is None and reader.latest_ns is None
     assert reader.ready.is_set()
     assert state["polls"] == (2 if when == "before_poll" else 3)
+    assert state["discovery_updates"] == 1
+    assert hints == [(b"background", b"1"), (b"directinput", b"0"), (b"rawinput", b"1")]
+    assert not reader.buttons  # Disconnected button states are invalid too.
     assert state["clocks"] == 2  # No fresh timestamp for the detached poll.
     assert state["closed"] and state["quit"]
     rest = list(record.VJOY_REST.items())
@@ -110,13 +124,14 @@ def test_detach_during_capture_never_saves_new_label_or_completion(record, monke
 
     class Telemetry:
         error = None
+        last_backjump = -1e9
 
         def __init__(self, port):
             self.stop = threading.Event()
 
         @property
         def latest_ns(self):
-            return (clock.now - 3_000_000, 1, 15.0, 0)
+            return (clock.now - 3_000_000, 1, 15.0, 0, 12.5, 100., .125, 12000, 3, 234, 5, 800)
 
         def start(self):
             pass
@@ -152,12 +167,12 @@ def test_detach_during_capture_never_saves_new_label_or_completion(record, monke
     monkeypatch.setattr(record, "load_config", lambda: {
         "monitor": 0, "crop": [0, 0, 8, 4], "masks": [], "save_width": 8})
     monkeypatch.setattr(record, "time", SimpleNamespace(
-        perf_counter_ns=lambda: clock.now,
+        perf_counter_ns=lambda: clock.now, perf_counter=lambda: clock.now / 1e9,
         sleep=lambda seconds: setattr(clock, "now", clock.now + round(seconds * 1e9))))
     monkeypatch.setitem(sys.modules, "dxcam", SimpleNamespace(create=lambda **kwargs: camera))
 
     with pytest.raises(RuntimeError, match="Recording incomplete.*TMX disconnected") as error:
-        record.main(["record"])
+        record.main(["record", "--drop-seconds", "0"])
 
     assert "TypeError" not in str(error.value)
     assert camera.released and camera.calls == 2
