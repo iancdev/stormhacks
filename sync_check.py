@@ -71,18 +71,22 @@ def gear_sync(session, rows, frame_ms, window=10):
     hud_events = [k for k in range(1, len(change) - 1)
                   if change[k] > thr and change[k] >= change[k - 1] and change[k] >= change[k + 1]]
     tele_events = [k for k in range(1, len(gear)) if gear[k] != gear[k - 1] and seg[k] == seg[k - 1]]
-    offsets = []
-    for i in tele_events:
-        near = [j - i for j in hud_events if abs(j - i) <= window]
-        if near:
-            offsets.append(min(near, key=abs))
+    # One-to-one matching, closest pairs first: a screen change can only explain one telemetry shift
+    # (reverse hides the green digit, so its two edges sit next to neighbouring shifts).
+    pairs = sorted((abs(j - i), i, j) for i in tele_events for j in hud_events if abs(j - i) <= window)
+    used_t, used_h, offsets = set(), set(), {}
+    for _, i, j in pairs:
+        if i not in used_t and j not in used_h:
+            used_t.add(i); used_h.add(j); offsets[i] = j - i
     print(f"  gear shifts: {len(tele_events)} in telemetry, {len(hud_events)} seen on screen, {len(offsets)} matched")
     if not offsets:
         return None
-    o = np.array(offsets, float)
-    print(f"  {'telemetry gear -> on-screen gear':32s} {np.mean(o):+5.1f} frames = {np.mean(o) * frame_ms:+6.0f} ms"
-          f"   (median {np.median(o):+.0f}, spread {np.std(o):.1f} frames)")
-    return float(np.mean(o))
+    o = np.array([offsets[i] for i in sorted(offsets)], float)
+    print(f"  per shift (frames): {' '.join(f'{int(v):+d}' for v in o)}")
+    med = float(np.median(o))
+    print(f"  {'telemetry gear -> on-screen gear':32s} {med:+5.1f} frames = {med * frame_ms:+6.0f} ms"
+          f"   (median; {np.mean(o == med) * 100:.0f}% of shifts exactly this)")
+    return med
 
 
 def best_lag(a, b, max_lag=20):
@@ -138,6 +142,8 @@ def main():
 
     def report(name, a, b, note):
         lag, c = best_lag(a, b)
+        if b is dx:
+            lag -= 0.5   # dx[k] is the motion between frames k-1 and k, i.e. centred half a frame earlier
         print(f"  {name:32s} {lag:+5.1f} frames = {lag * frame_ms:+6.0f} ms   corr {c:+.2f}   {note}")
         return lag, c
 
@@ -155,10 +161,9 @@ def main():
     best = shift if shift is not None else lag
     if best is None:
         print("\nNo sync measurement: record a new session with corners and gear shifts.")
-    elif abs(best) <= 1.5:
-        print(f"\nOK: the screen is within {abs(best) * frame_ms:.0f} ms of telemetry (about one frame).")
     else:
-        print(f"\nCHECK: the screen is {best * frame_ms:+.0f} ms off telemetry. Shift labels by this much.")
+        print(f"\nThe screen shows the game {best * frame_ms:+.0f} ms ({best:+.1f} frames) after telemetry reports it.\n"
+              "A steady offset is fine: account for it in the label shift when training.")
 
 
 if __name__ == "__main__":
