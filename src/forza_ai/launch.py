@@ -61,7 +61,11 @@ def _read_json(path):
 
 def _number(value, name, minimum=0, maximum=None, *, positive=False, integer=False):
     expected = type(value) is int if integer else type(value) in (int, float)
-    if (not expected or not math.isfinite(value) or value < minimum
+    try:
+        finite = expected and math.isfinite(value)
+    except OverflowError:
+        finite = False
+    if (not finite or value < minimum
             or (positive and value == minimum) or (maximum is not None and value > maximum)):
         kind = "integer" if integer else "number"
         bounds = f"greater than {minimum}" if positive else f"at least {minimum}"
@@ -299,7 +303,21 @@ def _redact(text):
 
 
 def _emit(value):
-    print(_redact(json.dumps(value, indent=2)))
+    print(_safe_json(value))
+
+
+def _safe_json(value):
+    # Redact strings before encoding, so keys containing quotes/newlines cannot
+    # evade redaction through JSON escaping or damage the JSON output syntax.
+    def scrub(item):
+        if isinstance(item, str):
+            return _redact(item)
+        if isinstance(item, dict):
+            return {_redact(key): scrub(entry) for key, entry in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [scrub(entry) for entry in item]
+        return item
+    return json.dumps(scrub(value), indent=2)
 
 
 def _package(distribution, module):
@@ -352,7 +370,8 @@ def doctor_report(role, *, model_path=None):
     if role == "desktop":
         torch_installed = next(p["installed"] for p in installed if p["distribution"] == "torch")
         report["cuda"] = _cuda_report() if torch_installed else {"checked": False, "available": False, "devices": []}
-        report["training_ready"] = python_ready and all(p["installed"] for p in installed)
+        report["training_ready"] = (python_ready and all(p["installed"] for p in installed)
+                                    and report["cuda"]["checked"])
         report["gpu_training_ready"] = report["training_ready"] and report["cuda"]["available"]
     if model_path is not None:
         path = Path(model_path).expanduser().resolve()
@@ -367,6 +386,7 @@ def doctor_report(role, *, model_path=None):
             model["error_type"] = type(error).__name__
         report["model"] = model
     report["ready"] = (python_ready and os_ready and all(p["installed"] for p in installed)
+                       and (role != "desktop" or report["training_ready"])
                        and report["network"]["shared_key_present"]
                        and (report["model"] is None or report["model"]["weights_loaded"]))
     report["not_checked"] = ["LAN connection, latency, and firewall rules", "actual game capture and telemetry",
@@ -393,7 +413,7 @@ def launch(plan):
     # Atomic leaf reservation prevents reuse even when two launchers start together.
     plan.run_dir.parent.mkdir(parents=True, exist_ok=True)
     plan.run_dir.mkdir(exist_ok=False)
-    (plan.run_dir / "launch.json").write_text(_redact(json.dumps(report, indent=2)) + "\n", encoding="utf-8")
+    (plan.run_dir / "launch.json").write_text(_safe_json(report) + "\n", encoding="utf-8")
     # Keep console input/output attached so manual/arm/quit and Ctrl+C retain their
     # normal behavior. Runtime diagnostic files live in this unique run directory.
     result = subprocess.run(list(plan.argv), shell=False, check=False)

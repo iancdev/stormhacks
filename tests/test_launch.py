@@ -1,6 +1,5 @@
 """Deployment checks must be useful without opening hardware or starting a server."""
 
-from copy import deepcopy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -263,6 +262,20 @@ def test_key_is_redacted_even_in_arbitrary_profile_path(tmp_path, desktop, monke
     assert secret not in capsys.readouterr().out
 
 
+def test_secret_redaction_occurs_before_json_escaping(monkeypatch, capsys):
+    secret = 'quote"and\nnewline'
+    monkeypatch.setenv("FORZA_LINK_KEY", secret)
+    launch._emit({"argv": ["prefix/" + secret], "schema_version": 1})
+    report = json.loads(capsys.readouterr().out)
+    assert report == {"argv": ["prefix/<redacted>"], "schema_version": 1}
+
+
+def test_huge_integer_reports_profile_error(tmp_path, desktop):
+    desktop["inference"]["port"] = 10**400
+    with pytest.raises(launch.ProfileError, match="inference.port"):
+        launch.build_plan(save(tmp_path, desktop))
+
+
 def test_missing_key_and_wrong_platform_report_unready(tmp_path, game, monkeypatch, capsys):
     monkeypatch.delenv("FORZA_LINK_KEY", raising=False)
     monkeypatch.setattr(launch.sys, "platform", "darwin")
@@ -314,6 +327,14 @@ def test_doctor_missing_torch_skips_import(monkeypatch):
     monkeypatch.setattr(launch, "_cuda_report", lambda: pytest.fail("missing torch was imported"))
     report = launch.doctor_report("desktop")
     assert not report["training_ready"] and not report["cuda"]["checked"]
+
+
+def test_doctor_installed_but_broken_torch_is_not_training_ready(monkeypatch):
+    mock_packages(monkeypatch)
+    monkeypatch.setenv("FORZA_LINK_KEY", "not-output")
+    monkeypatch.setattr(launch, "_cuda_report", lambda: {"checked": False, "available": False, "error_type": "OSError"})
+    report = launch.doctor_report("desktop")
+    assert not report["ready"] and not report["training_ready"] and not report["gpu_training_ready"]
 
 
 def test_game_doctor_only_discovers_packages(monkeypatch):
