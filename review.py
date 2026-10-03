@@ -8,7 +8,9 @@ Prints a per-segment summary and flags frames that probably aren't your driving:
   takeover   Forza's steering doesn't follow your wheel (game in control, e.g. after the finish line)
   reverse    gear 0
   slow       under 20 km/h (stuck, restarting)
-  wild       wheel past 90 degrees (crash, spin, recovery flailing)
+  wild       wheel past 90 degrees. Shown for information only, KEPT for training: failed slides end
+             in a rewind/crash that the recorder and seg_edge already remove, so what's left are
+             slides you caught, which are the recovery examples the model needs.
   seg_edge   first 3 s and last 3 s of every segment (late-noticed mistakes before a rewind,
              a crash before Ctrl+C, lap banners after a restart)
 Writes <session>/review.png: steering over time (flags in red, segment breaks in yellow), then
@@ -102,13 +104,17 @@ def main():
     if not rows:
         sys.exit(f"{session}: no frames")
     flags, deg, ts, k, v = flags_for(rows)
-    any_flag = np.any(np.stack(list(flags.values())), axis=0)
+    info = {"wild"}   # shown, not excluded
+    any_flag = np.any(np.stack([m for n, m in flags.items() if n not in info]), axis=0)
 
     print(f"{session}\n{len(rows)} frames = {len(rows) / 30:.0f} s.  Forza steer per wheel degree: {k:.3f}\n")
     print("Flagged frames (left out of training):")
     for name, m in flags.items():
-        print(f"  {name:9s} {int(m.sum()):5d}")
-    print(f"  {'total':9s} {int(any_flag.sum()):5d}  ({any_flag.mean() * 100:.1f}%)\n")
+        if name not in info:
+            print(f"  {name:9s} {int(m.sum()):5d}")
+    print(f"  {'total':9s} {int(any_flag.sum()):5d}  ({any_flag.mean() * 100:.1f}%)")
+    kept_wild = flags["wild"] & ~any_flag
+    print(f"Caught slides kept for training (wheel past 90 deg): {int(kept_wild.sum())} frames\n")
 
     sheet = [timeline(rows, deg, ts, k, any_flag)]
     segs = sorted({r["segment"] for r in rows}, key=int)
