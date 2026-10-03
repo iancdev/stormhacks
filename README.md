@@ -37,4 +37,35 @@ Overtaking, navigation, reinforcement learning, and network-separated inference 
 
 ## Status
 
-Planning stage. Prior hardware experiments reportedly demonstrated wheel input, motor actuation, and Forza/vJoy communication separately. Those scripts are not yet in this repository; integrated operation and live telemetry decoding still require verification.
+The tested hardware diagnostic is in `utils/test.py`. The offline training pipeline and physical adapter are implemented. Synthetic sessions exercise validation, training, resume, evaluation, and portable export. The adapter can run its controller and placeholder policy against simulated hardware. No real dataset has been supplied, no GPU/Colab run has been verified, and Windows motor control still requires hardware acceptance. The user reports a verified short recording, but its recorder and session files are not in this checkout yet.
+
+- [Durable delivery plan and ownership](docs/PLAN.md)
+- [Shared recording and model contracts](docs/CONTRACTS.md)
+- [Adapter usage and Windows acceptance](docs/ADAPTER.md)
+- [Training, dataset transfer, and inference](docs/TRAINING.md)
+- [Colab notebook](notebooks/train_colab.ipynb)
+
+## Start training development
+
+Use Python 3.10+ in a virtual environment. This small CPU smoke run needs no wheel, game, or real recording:
+
+```sh
+python -m pip install -e '.[training,test]'
+forza-train synthetic /tmp/forza-fixture --sessions 3 --frames 24
+forza-train validate /tmp/forza-fixture
+forza-train train /tmp/forza-fixture /tmp/forza-run --epochs 1 --device cpu
+forza-train resume /tmp/forza-run/last.pt /tmp/forza-fixture --epochs 2 --device cpu
+forza-train evaluate /tmp/forza-run/best.pt /tmp/forza-fixture
+forza-train export /tmp/forza-run/best.pt /tmp/forza-export
+python -m pytest -q
+```
+
+Use new output paths for a new smoke run; use `resume` for an existing run. Synthetic success proves the pipeline executes, not that the model can drive. In Colab, the notebook can upload a private GitHub repository ZIP and run the synthetic path before real data exists. For real data, it extracts completed session archives from Drive to the runtime's local disk, while keeping checkpoints on Drive.
+
+## Run the adapter without hardware
+
+```sh
+python -m forza_ai.runtime --backend sim --assist --duration 5
+```
+
+This is a fixed-angle stationary test policy. It has no road vision. See the adapter guide before switching to Windows hardware. The inspected Windows driver bindings are pinned in the optional `hardware` extra; the original `requirements.txt` belongs to the diagnostic environment, not Colab.

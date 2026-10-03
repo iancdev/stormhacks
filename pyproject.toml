@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forza-ai"
+version = "0.1.0"
+description = "Human-pedals, AI-steering behavior cloning pipeline"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "Pillow>=10"]
+
+[project.optional-dependencies]
+training = ["torch>=2.2"]
+test = ["pytest>=8"]
+hardware = [
+  "comtypes; sys_platform == 'win32'",
+  "dxcam; sys_platform == 'win32'",
+  "PySDL2==0.9.17; sys_platform == 'win32'",
+  "pysdl2-dll==2.32.10; sys_platform == 'win32'",
+  "pyvjoyffb==0.4; sys_platform == 'win32'",
+]
+
+[project.scripts]
+forza-train = "forza_ai.training.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

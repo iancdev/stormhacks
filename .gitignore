@@ -13,13 +13,18 @@ __pycache__/
 !.env.example
 
 # Driving recordings, models, and runtime output
-data/
-recordings/
-checkpoints/
-runs/
-logs/
+/data/
+/recordings/
+/checkpoints/
+/runs/
+/logs/
 *.log
 
 # Operating system files
 .DS_Store
 Thumbs.db
+
+# Local Python package build output
+*.egg-info/
+build/
+dist/
