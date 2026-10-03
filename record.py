@@ -249,11 +249,15 @@ class WheelReader(threading.Thread):
         if sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK) != 0:
             raise RuntimeError("SDL init failed: " + sdl2.SDL_GetError().decode())
         js = None
-        for i in range(sdl2.SDL_NumJoysticks()):
-            name = (sdl2.SDL_JoystickNameForIndex(i) or b"?").decode(errors="replace").lower()
-            if "vjoy" not in name and ("tmx" in name or "thrustmaster" in name):
-                js = sdl2.SDL_JoystickOpen(i)
-                break
+        deadline = time.perf_counter() + 3   # RawInput lists devices a moment after init
+        while not js and time.perf_counter() < deadline:
+            sdl2.SDL_JoystickUpdate()
+            for i in range(sdl2.SDL_NumJoysticks()):
+                name = (sdl2.SDL_JoystickNameForIndex(i) or b"?").decode(errors="replace").lower()
+                if "vjoy" not in name and ("tmx" in name or "thrustmaster" in name):
+                    js = sdl2.SDL_JoystickOpen(i)
+                    break
+            time.sleep(0.05)
         if not js:
             raise RuntimeError("No Thrustmaster/TMX wheel found (plugged in? HidHide allowing this python.exe?)")
 
