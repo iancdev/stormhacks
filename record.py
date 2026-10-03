@@ -344,13 +344,16 @@ class TelemetryReader(threading.Thread):
                            struct.unpack_from("<f", data, 292)[0],
                            struct.unpack_from("<f", data, 48)[0],    # AngularVelocityY (yaw rate, rad/s)
                            struct.unpack_from("<I", data, 4)[0],     # TimestampMS (game clock)
-                           data[319])                                # Gear
+                           data[319],                                # Gear
+                           struct.unpack_from("<i", data, 212)[0],   # CarOrdinal (which car)
+                           struct.unpack_from("<i", data, 216)[0],   # CarClass (0=D .. 7=X)
+                           struct.unpack_from("<i", data, 220)[0])   # CarPerformanceIndex
         self.sock.close()
 
 
 COLUMNS = ["frame", "segment", "t", "steer_raw", "steer_deg", "brake", "gas",
            "wheel_age_ms", "speed_mps", "race_on", "tele_steer", "tele_age_ms", "race_time", "distance",
-           "yaw_rate", "game_ms", "gear"]
+           "yaw_rate", "game_ms", "gear", "car_ordinal", "car_class", "car_pi"]
 
 
 class Writer(threading.Thread):
@@ -523,7 +526,8 @@ def cmd_record(args):
                        f"{tl[2]:.3f}" if tl else "", tl[1] if tl else "",
                        tl[3] if tl else "", f"{(t - tl[0]) * 1000:.1f}" if tl else "",
                        f"{tl[4]:.3f}" if tl else "", f"{tl[5]:.1f}" if tl else "",
-                       f"{tl[6]:.4f}" if tl else "", tl[7] if tl else "", tl[8] if tl else ""]
+                       f"{tl[6]:.4f}" if tl else "", tl[7] if tl else "", tl[8] if tl else "",
+                       tl[9] if tl else "", tl[10] if tl else "", tl[11] if tl else ""]
                 crop_img = img[cy0:cy1, cx0:cx1]
                 hud = img[hy0:hy1, hx0:hx1].copy() if hud_box else None
                 pending.append((t, segment, process(crop_img, masks, size), hud, row))
