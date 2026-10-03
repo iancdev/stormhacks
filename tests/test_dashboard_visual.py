@@ -150,3 +150,48 @@ def test_plot_history_contains_real_source_age_and_torque():
     assert sample["torque"] == -.08 and sample["observation_age_ms"] == 14
     assert sample["inference_ms"] == 9
     assert sample["predicted_angle_deg"] is None
+
+
+def test_quick_disengage_is_available_only_when_ai_may_have_authority():
+    assert view({"mode": "assist"})["disengage"]
+    assert view({"mode": "assist"}, stale=True)["disengage"]
+    assert not view({"mode": "manual"})["disengage"]
+    assert not view({"mode": "takeover"})["disengage"]
+    assert not view({"mode": "fault"})["disengage"]
+    assert not view({"mode": "assist"}, offline=True)["disengage"]
+    assert not view({"mode": "assist"}, readonly=True)["disengage"]
+    assert not view({"mode": "manual", "shadow": True})["disengage"]
+    # Full manual takeover remains useful for declaring expert control separately.
+    assert view({"mode": "manual"})["takeover"]
+
+
+def test_quick_action_reuses_manual_queue_without_duplicate_element_ids():
+    from html.parser import HTMLParser
+
+    class Elements(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids = []
+            self.manual_actions = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if "id" in attrs:
+                self.ids.append(attrs["id"])
+            if tag == "button" and attrs.get("data-event") == "manual":
+                self.manual_actions.append(attrs)
+
+    elements = Elements()
+    elements.feed(_PAGE)
+    assert len(elements.ids) == len(set(elements.ids))
+    assert len(elements.manual_actions) == 2
+    assert sum(action.get("data-quick") == "true" for action in elements.manual_actions) == 1
+    assert all("disabled" in action for action in elements.manual_actions)
+
+
+def test_stale_wheel_explanation_names_sample_age_without_diagnosing_disconnect():
+    result = view({"mode": "fault", "reason": "stale_wheel", "hardware_mode": "simulation"})
+    assert "sample is too old" in result["detail"]
+    assert "control-loop timing" in result["detail"]
+    assert "device connection" in result["detail"]
+    assert "disconnected" not in result["detail"]
