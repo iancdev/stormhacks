@@ -227,3 +227,11 @@ still applies the exported RGB/Pillow bilinear 200×66 transform. For live parit
 configure the runtime with that recording's exact capture configuration and saved
 size before model preprocessing. No real recording or driving result is implied
 by the synthetic import tests.
+
+A normally closed recorder can report empty segments: it increments the segment
+before enqueueing a frame, and `queue.Full` can drop every frame in that segment,
+including a final resumed segment. Import accepts absent segment IDs only when
+the recorded `dropped` count supplies at least one dropped frame per empty
+segment. Segment IDs must still be ordered and within the declared count. This
+check admits that recorder behavior without inventing samples or accepting an
+unexplained mismatch in completion metadata.

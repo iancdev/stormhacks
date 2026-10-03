@@ -175,3 +175,55 @@ def test_manual_mode_is_required(tmp_path):
     with pytest.raises(SystemExit) as error:
         main(['import-recording', str(source), str(tmp_path / 'dest')])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize('prefix', ['', 'imported-session/'])
+def test_colab_archive_accepts_imported_recording_and_validates(tmp_path, prefix):
+    import runpy
+    import zipfile
+
+    helpers = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts/colab_archives.py'))
+    source = recording(tmp_path / 'source')
+    imported = tmp_path / 'imported'
+    original = import_recording(source, imported, expert_mode='manual')
+
+    def archive_import():
+        archive = tmp_path / 'recording.zip'
+        with zipfile.ZipFile(archive, 'w') as output:
+            for path in imported.rglob('*'):
+                if path.is_file():
+                    output.write(path, prefix + path.relative_to(imported).as_posix())
+        return archive
+
+    summaries = helpers['extract_sessions']([archive_import()], tmp_path / 'extracted')
+    assert summaries == [original]
+    # A valid directory shape is insufficient: canonical loader still checks provenance.
+    manifest = imported / 'metadata.json'
+    metadata = json.loads(manifest.read_text())
+    metadata['expert_mode'] = 'assist'
+    manifest.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='provenance'):
+        helpers['extract_sessions']([archive_import()], tmp_path / 'invalid')
+    assert not (tmp_path / 'invalid').exists()
+    metadata['schema_version'] = 'unknown_format'
+    manifest.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='unsupported session schema'):
+        helpers['extract_sessions']([archive_import()], tmp_path / 'unsupported')
+    assert not (tmp_path / 'unsupported').exists()
+
+
+@pytest.mark.parametrize('case,empty_segments', [('trailing', 1), ('leading', 1), ('middle', 1), ('multiple', 3)])
+def test_empty_segments_require_dropped_frame_evidence(tmp_path, case, empty_segments):
+    source = recording(tmp_path / 'source')
+    if case == 'leading':
+        edit_rows(source, lambda rows: [r.update(segment=str(int(r['segment']) + 1)) for r in rows])
+    elif case == 'middle':
+        edit_rows(source, lambda rows: [r.update(segment='2') for r in rows if r['segment'] == '1'])
+    edit_meta(source, lambda m: m.update(segments=2 + empty_segments, dropped=empty_segments))
+    report = import_recording(source, tmp_path / 'valid', expert_mode='manual')
+    assert report['accepted'] == 8
+    assert report['provenance']['segments'] == 2 + empty_segments
+    edit_meta(source, lambda m: m.update(dropped=empty_segments - 1))
+    with pytest.raises(ValueError, match='empty segments exceed'):
+        import_recording(source, tmp_path / 'invalid', expert_mode='manual')
+    assert not (tmp_path / 'invalid').exists()
