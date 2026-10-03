@@ -13,7 +13,7 @@ __pycache__/
 !.env.example
 
 # Driving recordings, models, and runtime output
-data/
+/data/
 recordings/
 checkpoints/
 runs/
