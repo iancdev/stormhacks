@@ -9,6 +9,8 @@ Prints a per-segment summary and flags frames that probably aren't your driving:
   reverse    gear 0
   slow       under 20 km/h (stuck, restarting)
   wild       wheel past 90 degrees (crash, spin, recovery flailing)
+  seg_edge   first 3 s and last 3 s of every segment (late-noticed mistakes before a rewind,
+             a crash before Ctrl+C, lap banners after a restart)
 Writes <session>/review.png: steering over time (flags in red, segment breaks in yellow), then
 the first and last frames of every segment, then a sample of flagged frames. Opens it when done.
 """
@@ -35,8 +37,22 @@ def flags_for(rows):
         "reverse": gear == 0,
         "slow": v < 20,
         "wild": np.abs(deg) > 90,
+        "seg_edge": segment_edges(rows),
     }
     return flags, deg, ts, k, v
+
+
+def segment_edges(rows, before_end_s=3.0, after_start_s=3.0):
+    """Last/first seconds of every segment. Ends: mistakes often start before the rewind's 5 s
+    window, and the session may end in a crash. Starts: lap banners and the car settling."""
+    t = np.array([float(r["t"]) for r in rows])
+    seg = np.array([r["segment"] for r in rows])
+    out = np.zeros(len(rows), bool)
+    for s in np.unique(seg):
+        idx = np.where(seg == s)[0]
+        ts = t[idx]
+        out[idx] = (ts > ts[-1] - before_end_s) | (ts < ts[0] + after_start_s)
+    return out
 
 
 def timeline(rows, deg, ts, k, any_flag, width=1600, height=220):
