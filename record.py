@@ -10,16 +10,21 @@ Run from the activated venv, in this order:
 Options:
     setup/preview --image PATH          # use a saved screenshot instead of grabbing the screen
     setup/preview --delay N             # seconds to alt-tab into Forza before the grab (default 5)
-    record --fps N                      # capture rate (default 30)
+    record --fps N                      # fresh capture target (default 60, measured rate reported)
     record --vjoy                       # also pass TMX steering/pedals through to vJoy (no FFB)
     record --no-telemetry               # record even without Forza Data Out (no speed, no pause)
 
 Crop/mask settings live in config/capture.json. Recordings go to data/recordings/<timestamp>/:
-frames/000000.jpg ..., labels.csv (one row per frame) and meta.json.
+frames/000000.jpg ..., labels.csv (one row per frame), capture_timing.csv, and meta.json.
+The legacy labels.csv t remains the rounded time after image retrieval. The separate
+timing CSV records precise host capture-start, retrieval, and input-poll timestamps;
+these are not game-render timestamps or proof of exact frame/USB synchronization.
 """
 import argparse
+from contextlib import ExitStack
 import csv
 import json
+import math
 import os
 import queue
 import socket
@@ -211,6 +216,7 @@ class WheelReader(threading.Thread):
         super().__init__(daemon=True)
         self.vjoy = vjoy
         self.latest = None          # (t, steer_raw, brake_raw, gas_raw)
+        self.latest_ns = None       # same atomic snapshot with integer perf_counter_ns time
         # SDL reads 0 on every axis until the wheel sends its first report, and raw 0 on a pedal
         # means half pressed. Only trust (and pass through) the axes once each one has moved.
         self.live = False
@@ -230,34 +236,33 @@ class WheelReader(threading.Thread):
         sdl2.SDL_SetHint(sdl2.SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, b"1")
         if sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK) != 0:
             raise RuntimeError("SDL init failed: " + sdl2.SDL_GetError().decode())
-        js = None
-        for i in range(sdl2.SDL_NumJoysticks()):
-            name = (sdl2.SDL_JoystickNameForIndex(i) or b"?").decode(errors="replace").lower()
-            if "vjoy" not in name and ("tmx" in name or "thrustmaster" in name):
-                js = sdl2.SDL_JoystickOpen(i)
-                break
-        if not js:
-            raise RuntimeError("No Thrustmaster/TMX wheel found (plugged in? HidHide allowing this python.exe?)")
-
-        j = None
-        if self.vjoy:
-            import pyvjoy
-            j = pyvjoy.VJoyDevice(1)
-            axes = {"X": pyvjoy.HID_USAGE_X, "Y": pyvjoy.HID_USAGE_Y, "Z": pyvjoy.HID_USAGE_Z}
-            for k, v in VJOY_REST.items():
-                j.set_axis(axes[k], v)
-
+        js, j = None, None
         def to_vjoy(raw):  # -32768..32767 -> 0x1..0x8000 (pedals stay inverted, like the TMX)
             return 1 + (raw + 32768) * 0x7FFF // 65535
 
         first, moved = None, [False, False, False]
         try:
+            for i in range(sdl2.SDL_NumJoysticks()):
+                name = (sdl2.SDL_JoystickNameForIndex(i) or b"?").decode(errors="replace").lower()
+                if "vjoy" not in name and ("tmx" in name or "thrustmaster" in name):
+                    js = sdl2.SDL_JoystickOpen(i)
+                    break
+            if not js:
+                raise RuntimeError("No Thrustmaster/TMX wheel found (plugged in? HidHide allowing this python.exe?)")
+            if self.vjoy:
+                import pyvjoy
+                j = pyvjoy.VJoyDevice(1)
+                axes = {"X": pyvjoy.HID_USAGE_X, "Y": pyvjoy.HID_USAGE_Y, "Z": pyvjoy.HID_USAGE_Z}
+                for k, v in VJOY_REST.items():
+                    j.set_axis(axes[k], v)
             while not self.stop.is_set():
                 sdl2.SDL_JoystickUpdate()
                 steer = sdl2.SDL_JoystickGetAxis(js, 0)
                 brake = sdl2.SDL_JoystickGetAxis(js, 1)
                 gas = sdl2.SDL_JoystickGetAxis(js, 2)
-                self.latest = (time.perf_counter(), steer, brake, gas)
+                sampled_ns = time.perf_counter_ns()
+                self.latest_ns = (sampled_ns, steer, brake, gas)
+                self.latest = (sampled_ns / 1e9, steer, brake, gas)
                 if not self.live:
                     first = first or (steer, brake, gas)
                     moved = [m or v != f for m, v, f in zip(moved, (steer, brake, gas), first)]
@@ -267,13 +272,18 @@ class WheelReader(threading.Thread):
                     j.set_axis(axes["Y"], to_vjoy(brake))
                     j.set_axis(axes["Z"], to_vjoy(gas))
                 self.ready.set()
-                time.sleep(0.004)
+                self.stop.wait(0.004)
         finally:
-            if j:
-                for k, v in VJOY_REST.items():
-                    j.set_axis(axes[k], v)
-            sdl2.SDL_JoystickClose(js)
-            sdl2.SDL_Quit()
+            try:
+                if j:
+                    for k, v in VJOY_REST.items():
+                        j.set_axis(axes[k], v)
+            finally:
+                try:
+                    if js:
+                        sdl2.SDL_JoystickClose(js)
+                finally:
+                    sdl2.SDL_Quit()
 
 
 class TelemetryReader(threading.Thread):
@@ -282,28 +292,95 @@ class TelemetryReader(threading.Thread):
     def __init__(self, port):
         super().__init__(daemon=True)
         self.latest = None          # (t, race_on, speed_mps, tele_steer)
+        self.latest_ns = None       # same snapshot with precise host receive time
+        self.error = None
         self.stop = threading.Event()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("127.0.0.1", port))
-        self.sock.settimeout(0.2)
+        try:
+            self.sock.bind(("127.0.0.1", port))
+            self.sock.settimeout(0.2)
+        except BaseException:
+            self.sock.close()
+            raise
 
     def run(self):
-        while not self.stop.is_set():
-            try:
-                data, _ = self.sock.recvfrom(1024)
-            except socket.timeout:
-                continue
-            if len(data) < 321:
-                continue
-            self.latest = (time.perf_counter(),
-                           struct.unpack_from("<i", data, 0)[0],
-                           struct.unpack_from("<f", data, 256)[0],
-                           struct.unpack_from("<b", data, 320)[0])
-        self.sock.close()
+        try:
+            while not self.stop.is_set():
+                try:
+                    data, _ = self.sock.recvfrom(1024)
+                except socket.timeout:
+                    continue
+                received_ns = time.perf_counter_ns()
+                if len(data) < 321:
+                    continue
+                values = (struct.unpack_from("<i", data, 0)[0],
+                          struct.unpack_from("<f", data, 256)[0],
+                          struct.unpack_from("<b", data, 320)[0])
+                if values[0] not in (0, 1) or not math.isfinite(values[1]) or values[1] < 0:
+                    continue
+                self.latest_ns = (received_ns, *values)
+                self.latest = (received_ns / 1e9, *values)
+        except Exception as error:
+            self.error = repr(error)
+        finally:
+            self.sock.close()
 
 
 COLUMNS = ["frame", "segment", "t", "steer_raw", "steer_deg", "brake", "gas",
            "wheel_age_ms", "speed_mps", "race_on", "tele_steer", "tele_age_ms"]
+TIMING_COLUMNS = ["frame", "segment", "capture_index", "capture_start_ns", "retrieved_ns",
+                  "wheel_sample_ns", "telemetry_sample_ns"]
+
+
+def capture_fps(value):
+    """Argparse and programmatic validation before opening any hardware."""
+    try:
+        fps = float(value)
+    except (ValueError, TypeError) as error:
+        raise argparse.ArgumentTypeError("fps must be finite and within (0, 240]") from error
+    if not math.isfinite(fps) or not 0 < fps <= 240:
+        raise argparse.ArgumentTypeError("fps must be finite and within (0, 240]")
+    return fps
+
+
+class FreshCapture:
+    """Paced one-shot capture: None never reuses or relabels a previous image.
+
+    DXcam v0.3.0 source: https://github.com/ra1nty/DXcam/blob/v0.3.0/dxcam/dxcam.py
+    grab(new_frame_only=True) applies only while its producer is stopped. Never
+    start a ring buffer here or claim ownership of an already-running camera.
+    """
+
+    def __init__(self, camera, region, fps, *, clock_ns=None, sleep=None):
+        self.camera, self.region = camera, tuple(region)
+        self.period_ns = round(1e9 / capture_fps(fps))
+        self.clock_ns = clock_ns or time.perf_counter_ns
+        self.sleep = sleep or time.sleep
+        self.next_start_ns = None
+        self.attempts = 0
+        self.no_frame_polls = 0
+        self.times = []
+        if camera.is_capturing:
+            raise RuntimeError("DXcam output is already capturing; exclusive camera ownership required")
+
+    def grab(self):
+        if self.camera.is_capturing:
+            raise RuntimeError("DXcam ring-buffer capture must remain stopped")
+        now = self.clock_ns()
+        if self.next_start_ns is not None and now < self.next_start_ns:
+            self.sleep((self.next_start_ns - now) / 1e9)
+        started = self.clock_ns()
+        self.next_start_ns = started + self.period_ns  # No catch-up bursts after a slow frame.
+        image = self.camera.grab(region=self.region, copy=True, new_frame_only=True)
+        returned = self.clock_ns()
+        if returned < started or (self.times and started <= self.times[-1][1]):
+            raise RuntimeError("capture clock reversed or repeated")
+        self.attempts += 1
+        if image is None:
+            self.no_frame_polls += 1
+        else:
+            self.times.append((0, started))
+        return image, started, returned
 
 
 class Writer(threading.Thread):
@@ -311,138 +388,255 @@ class Writer(threading.Thread):
 
     def __init__(self, session_dir, quality):
         super().__init__(daemon=True)
+        self.session_dir = session_dir
         self.frames_dir = os.path.join(session_dir, "frames")
         os.makedirs(self.frames_dir)
-        self.csv_file = open(os.path.join(session_dir, "labels.csv"), "w", newline="")
-        self.csv = csv.writer(self.csv_file)
-        self.csv.writerow(COLUMNS)
         self.params = [cv2.IMWRITE_JPEG_QUALITY, quality]
         self.q = queue.Queue(maxsize=300)
+        self.stop = threading.Event()
+        self.error = None
+        self.saved = 0
+        self.times = []
+        self.capture_times = []
 
     def run(self):
-        n = 0
-        while True:
-            item = self.q.get()
-            if item is None:
-                break
-            img, row = item
-            cv2.imwrite(os.path.join(self.frames_dir, f"{row[0]:06d}.jpg"), img, self.params)
-            self.csv.writerow(row)
-            n += 1
-            if n % 100 == 0:
-                self.csv_file.flush()
-        self.csv_file.close()
+        try:
+            with ExitStack() as files:
+                labels_file = files.enter_context(open(os.path.join(self.session_dir, "labels.csv"), "x", newline=""))
+                timing_file = files.enter_context(open(os.path.join(self.session_dir, "capture_timing.csv"), "x", newline=""))
+                labels, timing = csv.writer(labels_file), csv.writer(timing_file)
+                labels.writerow(COLUMNS)
+                timing.writerow(TIMING_COLUMNS)
+                while not self.stop.is_set() or not self.q.empty():
+                    try:
+                        item = self.q.get(timeout=.05)
+                    except queue.Empty:
+                        continue
+                    try:
+                        img, row, timestamps = item
+                        if row[0] != self.saved:
+                            raise ValueError("saved frame numbers must be contiguous")
+                        path = os.path.join(self.frames_dir, f"{row[0]:06d}.jpg")
+                        if not cv2.imwrite(path, img, self.params):
+                            raise OSError(f"JPEG write failed: {path}")
+                        labels.writerow(row)
+                        timing.writerow(timestamps)
+                        self.saved += 1
+                        self.times.append((row[1], timestamps[4] / 1e9))
+                        self.capture_times.append((row[1], timestamps[3] / 1e9))
+                        if self.saved % 100 == 0:
+                            labels_file.flush()
+                            timing_file.flush()
+                    finally:
+                        self.q.task_done()
+        except BaseException as error:
+            self.error = error
+
+    def check(self):
+        if self.error is not None:
+            raise RuntimeError(f"recording writer failed: {self.error}") from self.error
+
+    def finish(self, timeout=5):
+        self.stop.set()
+        self.join(timeout)
+        if self.is_alive():
+            raise RuntimeError("recording writer did not stop before shutdown deadline; no meta.json published")
+        self.check()
 
 
 # ---------------------------------------------------------------- record
 
+def make_record_row(frame_idx, segment, retrieved_ns, origin_ns, wheel_sample, tele_sample):
+    """Keep the original per-frame label precision and retrieval-time semantics."""
+    wt_ns, steer, brake_raw, gas_raw = wheel_sample
+    brake = (32767 - brake_raw) / 65535
+    gas = (32767 - gas_raw) / 65535
+    return [frame_idx, segment, f"{(retrieved_ns - origin_ns) / 1e9:.4f}",
+            steer, f"{steer / STEER_UNITS_PER_DEG:.2f}", f"{brake:.4f}", f"{gas:.4f}",
+            f"{(retrieved_ns - wt_ns) / 1e6:.1f}",
+            f"{tele_sample[2]:.3f}" if tele_sample else "", tele_sample[1] if tele_sample else "",
+            tele_sample[3] if tele_sample else "",
+            f"{(retrieved_ns - tele_sample[0]) / 1e6:.1f}" if tele_sample else ""]
+
+
+def measured_capture_report(capture, writer, duration_ns, fps, dropped, inactive):
+    """Observed throughput, counting only fresh grabs and successfully saved JPEGs."""
+    duration = max(0, duration_ns) / 1e9
+    fresh = len(capture.times)
+    return {
+        "duration_s": round(duration, 6), "capture_attempts": capture.attempts,
+        "fresh_frames": fresh, "no_new_frame_polls": capture.no_frame_polls,
+        "saved_frames": writer.saved, "dropped_queue_frames": dropped,
+        "inactive_fresh_frames": inactive, "fresh_not_saved": fresh - writer.saved,
+        "captured_fps": round(fresh / duration, 3) if duration else 0.0,
+        "saved_fps": round(writer.saved / duration, 3) if duration else 0.0,
+        "rate_denominator": "whole acquisition duration including inactive/paused periods; excludes writer drain",
+        "fresh_capture_gaps": gap_report([(segment, ns / 1e9) for segment, ns in capture.times], fps),
+        "saved_capture_gaps": gap_report(writer.capture_times, fps),
+    }
+
+
 def cmd_record(args):
-    import dxcam
+    args.fps = capture_fps(args.fps)
+    if not 1 <= args.quality <= 100:
+        raise ValueError("JPEG quality must be within [1, 100]")
     cfg = load_config()
     if not cfg["crop"]:
         sys.exit("No crop yet. Run: python record.py setup")
     size = save_size(cfg)
     masks = masks_in_crop(cfg)
+    import dxcam
 
-    wheel = WheelReader(args.vjoy)
-    wheel.start()
-    wheel.ready.wait(5)
-    if wheel.error or wheel.latest is None:
-        sys.exit(f"Wheel error: {wheel.error or 'no reading within 5 s'}")
-
-    tele = None
-    if not args.no_telemetry:
-        try:
-            tele = TelemetryReader(args.port)
-            tele.start()
-        except OSError as e:
-            wheel.stop.set()
-            sys.exit(f"Can't listen on 127.0.0.1:{args.port} ({e}). Close check.py telemetry, "
-                     "or use --no-telemetry.")
-
-    session = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session_dir = os.path.join(DATA_DIR, "recordings", session)
-    writer = Writer(session_dir, args.quality)
-    writer.start()
-
-    cam = dxcam.create(output_idx=cfg["monitor"], output_color="BGR")
-    cam.start(region=tuple(cfg["crop"]), target_fps=args.fps, video_mode=True)
-
-    print(f"Recording to {session_dir}\n"
-          f"crop={cfg['crop']} masks={len(cfg['masks'])} saved={size[0]}x{size[1]} fps={args.fps} "
-          f"vjoy={'on' if args.vjoy else 'off'} telemetry={'on' if tele else 'off'}\n"
-          + ("Frames are only kept while Forza reports IsRaceOn=1 (driving, not paused/menus).\n" if tele else "")
-          + "Ctrl+C to stop.\n")
-
+    wheel = tele = writer = cam = capture = None
+    session_dir = None
     frame_idx, segment, recording = 0, -1, False
-    dropped = 0
-    times = []                       # (segment, t) of kept frames, for the gap report
-    t_start, last_status = time.perf_counter(), 0.0
+    dropped, inactive = 0, 0
+    t_start_ns = t_end_ns = None
+    last_status = -math.inf
+    failure = None
+    cleanup_errors = []
     try:
+        wheel = WheelReader(args.vjoy)
+        wheel.start()
+        wheel.ready.wait(5)
+        if wheel.error or wheel.latest_ns is None:
+            raise RuntimeError(f"Wheel error: {wheel.error or 'no reading within 5 s'}")
+        if not args.no_telemetry:
+            try:
+                tele = TelemetryReader(args.port)
+                tele.start()
+            except OSError as error:
+                raise RuntimeError(f"Can't listen on 127.0.0.1:{args.port} ({error}). Close other telemetry "
+                                   "receivers, or use --no-telemetry.") from error
+        session = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        session_dir = os.path.join(DATA_DIR, "recordings", session)
+        os.makedirs(session_dir, exist_ok=False)
+        writer = Writer(session_dir, args.quality)
+        writer.start()
+        candidate = dxcam.create(output_idx=cfg["monitor"], output_color="BGR")
+        if candidate.is_capturing:
+            raise RuntimeError("DXcam output is already capturing; close the other capture owner")
+        cam = candidate  # Only release a camera we acquired while stopped.
+        capture = FreshCapture(cam, cfg["crop"], args.fps)
+        print(f"Recording to {session_dir}\n"
+              f"crop={cfg['crop']} masks={len(cfg['masks'])} saved={size[0]}x{size[1]} "
+              f"fresh fps target={args.fps:g} vjoy={'on' if args.vjoy else 'off'} "
+              f"telemetry={'on' if tele else 'off'}\n"
+              + ("Frames are only kept while Forza reports IsRaceOn=1 (driving, not paused/menus).\n" if tele else "")
+              + "Ctrl+C to stop.\n")
+        t_start_ns = time.perf_counter_ns()
         while True:
-            img = cam.get_latest_frame()
-            t = time.perf_counter()
-            if img is None:
-                continue
-            wt, steer, brake_raw, gas_raw = wheel.latest
+            writer.check()
             if wheel.error:
                 raise RuntimeError("Wheel thread died: " + wheel.error)
-
-            tl = tele.latest if tele else None
-            tele_fresh = tl is not None and t - tl[0] < 0.5
+            if tele and tele.error:
+                raise RuntimeError("Telemetry thread died: " + tele.error)
+            img, capture_ns, retrieved_ns = capture.grab()
+            t = retrieved_ns / 1e9  # Still post-retrieval time, never relabelled as capture start.
+            ws = wheel.latest_ns
+            wt_ns, steer, brake_raw, gas_raw = ws
+            tl = tele.latest_ns if tele else None
+            tele_fresh = tl is not None and 0 <= retrieved_ns - tl[0] < 500_000_000
+            wheel_fresh = 0 <= retrieved_ns - wt_ns < 100_000_000
             if not wheel.live:
                 active, state = False, "turn wheel + press both pedals once"
+            elif not wheel_fresh:
+                active, state = False, "waiting for fresh wheel"
             elif tele:
                 active = tele_fresh and tl[1] == 1
                 state = "REC" if active else ("paused (IsRaceOn=0)" if tele_fresh else "waiting for telemetry")
             else:
                 active, state = True, "REC"
-
-            if active and not recording:
-                segment += 1          # new segment after every pause: don't shift labels across gaps
-            recording = active
-
-            if active:
-                brake = (32767 - brake_raw) / 65535
-                gas = (32767 - gas_raw) / 65535
-                row = [frame_idx, segment, f"{t - t_start:.4f}", steer, f"{steer / STEER_UNITS_PER_DEG:.2f}",
-                       f"{brake:.4f}", f"{gas:.4f}", f"{(t - wt) * 1000:.1f}",
-                       f"{tl[2]:.3f}" if tl else "", tl[1] if tl else "",
-                       tl[3] if tl else "", f"{(t - tl[0]) * 1000:.1f}" if tl else ""]
-                try:
-                    writer.q.put_nowait((process(img, masks, size), row))
-                    times.append((segment, t))
-                    frame_idx += 1
-                except queue.Full:
-                    dropped += 1
-
-            if t - last_status > 0.5:
+            if not active:
+                recording = False
+            if img is not None:
+                if not active:
+                    inactive += 1
+                else:
+                    next_segment = segment if recording else segment + 1
+                    row = make_record_row(frame_idx, next_segment, retrieved_ns, t_start_ns, ws, tl)
+                    timestamps = [frame_idx, next_segment, len(capture.times) - 1, capture_ns, retrieved_ns,
+                                  wt_ns, tl[0] if tl else ""]
+                    try:
+                        writer.q.put_nowait((process(img, masks, size), row, timestamps))
+                        segment, recording = next_segment, True
+                        frame_idx += 1
+                    except queue.Full:
+                        dropped += 1
+            if t - last_status > .5:
                 last_status = t
                 speed = f"{tl[2] * 3.6:5.0f} km/h" if tl else "   -- km/h"
+                elapsed = max((retrieved_ns - t_start_ns) / 1e9, .001)
                 print(f"\r[{state:22s}] frames={frame_idx:6d} seg={max(segment, 0):3d} "
                       f"steer={steer / STEER_UNITS_PER_DEG:+7.1f}deg gas={(32767 - gas_raw) / 65535:4.2f} "
-                      f"brake={(32767 - brake_raw) / 65535:4.2f} {speed} dropped={dropped}   ",
-                      end="", flush=True)
+                      f"brake={(32767 - brake_raw) / 65535:4.2f} {speed} dropped={dropped} "
+                      f"fresh={len(capture.times) / elapsed:.1f}/s   ", end="", flush=True)
     except KeyboardInterrupt:
         print("\nStopping...")
+    except BaseException as error:
+        failure = error
     finally:
-        cam.stop()
-        cam.release()
-        wheel.stop.set()
-        if tele:
-            tele.stop.set()
-        writer.q.put(None)
-        writer.join()
-        wheel.join(2)
-
-    report = gap_report(times, args.fps)
+        t_end_ns = time.perf_counter_ns()
+        for reader in (wheel, tele):
+            if reader is not None:
+                reader.stop.set()
+        if cam is not None:
+            try:
+                cam.release()
+            except BaseException as error:
+                cleanup_errors.append(f"camera release: {error}")
+        if writer is not None:
+            try:
+                writer.finish()
+            except BaseException as error:
+                cleanup_errors.append(str(error))
+        for name, reader in (("wheel", wheel), ("telemetry", tele)):
+            if reader is not None:
+                try:
+                    reader.join(2)
+                    if reader.is_alive():
+                        raise RuntimeError(f"{name} thread did not stop before shutdown deadline")
+                    if reader.error:
+                        raise RuntimeError(f"{name}: {reader.error}")
+                except BaseException as error:
+                    cleanup_errors.append(str(error))
+    if failure is not None or cleanup_errors:
+        detail = "; ".join(cleanup_errors)
+        raise RuntimeError(f"Recording incomplete; no meta.json published. {failure or ''} {detail}") from failure
+    if capture is None or t_start_ns is None:
+        print("Stopped before acquisition began; no completed recording published.")
+        return
+    if writer.saved != frame_idx:
+        raise RuntimeError("Writer count mismatch; no meta.json published")
+    report = gap_report(writer.times, args.fps)
+    measured = measured_capture_report(capture, writer, t_end_ns - t_start_ns,
+                                       args.fps, dropped, inactive)
     meta = {"session": session, "config": cfg, "saved_size": size, "fps_target": args.fps,
-            "frames": frame_idx, "segments": segment + 1, "dropped": dropped, "vjoy": args.vjoy,
+            "frames": writer.saved, "segments": segment + 1, "dropped": dropped, "vjoy": args.vjoy,
             "telemetry": tele is not None, "steer_units_per_deg": STEER_UNITS_PER_DEG,
-            "pedals": "0 = released, 1 = floored", "gaps": report}
-    with open(os.path.join(session_dir, "meta.json"), "w") as f:
-        json.dump(meta, f, indent=2)
-    print(f"Saved {frame_idx} frames in {segment + 1} segment(s) to {session_dir} (dropped {dropped})")
+            "pedals": "0 = released, 1 = floored", "gaps": report, "completed": True,
+            "jpeg_quality": args.quality, "measured_capture": measured,
+            "capture_provenance": {
+                "method": "dxcam 0.3 one-shot grab(copy=True, new_frame_only=True); no ring buffer/video mode",
+                "source": "https://github.com/ra1nty/DXcam/blob/v0.3.0/dxcam/dxcam.py",
+                "clock": "perf_counter_ns", "origin_ns": t_start_ns,
+                "timing_file": "capture_timing.csv", "timing_columns": TIMING_COLUMNS,
+                "labels_t": "relative perf_counter after image retrieval, rounded to four decimals (legacy semantics)",
+                "capture_start_ns": "host time immediately before grab; not a GPU presentation/game render timestamp",
+                "retrieved_ns": "host time immediately after grab returned",
+                "wheel_sample_ns": "host polling completion time; not a USB hardware report timestamp",
+                "telemetry_sample_ns": "host UDP receive time; not game simulation time",
+                "alignment": "latest input samples read after retrieval; legacy importer still uses rounded row labels",
+                "cached_frames_reused": False, "actual_game_render_time_known": False,
+            }}
+    temporary = os.path.join(session_dir, "meta.json.tmp")
+    with open(temporary, "x") as handle:
+        json.dump(meta, handle, indent=2, allow_nan=False)
+        handle.write("\n")
+    os.replace(temporary, os.path.join(session_dir, "meta.json"))
+    print(f"Saved {writer.saved} frames in {segment + 1} segment(s) to {session_dir} (dropped {dropped})")
+    print(f"Measured fresh capture {measured['captured_fps']:.1f} fps; saved {measured['saved_fps']:.1f} fps "
+          f"over {measured['duration_s']:.1f}s (includes pauses, excludes writer drain).")
     if report:
         print(f"Frame gaps (ms): median {report['median_ms']}, p99 {report['p99_ms']}, "
               f"max {report['max_ms']}, {report['over_2x']} gap(s) > {2000 / args.fps:.0f} ms")
@@ -459,7 +653,7 @@ def gap_report(times, fps):
 
 # ---------------------------------------------------------------- main
 
-def main():
+def argument_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("setup", "preview"):
@@ -467,12 +661,16 @@ def main():
         sp.add_argument("--image", help="use a saved screenshot instead of grabbing the screen")
         sp.add_argument("--delay", type=int, default=5, help="seconds before the screen grab")
     rp = sub.add_parser("record")
-    rp.add_argument("--fps", type=int, default=30)
+    rp.add_argument("--fps", type=capture_fps, default=60.0, help="fresh-frame target, 0 < fps <= 240 (default 60)")
     rp.add_argument("--quality", type=int, default=90, help="JPEG quality")
     rp.add_argument("--vjoy", action="store_true", help="pass TMX steering/pedals through to vJoy")
     rp.add_argument("--no-telemetry", action="store_true")
     rp.add_argument("--port", type=int, default=9999)
-    args = p.parse_args()
+    return p
+
+
+def main(argv=None):
+    args = argument_parser().parse_args(argv)
     {"setup": cmd_setup, "preview": cmd_preview, "record": cmd_record}[args.cmd](args)
 
 
