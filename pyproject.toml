@@ -23,6 +23,9 @@ hardware = [
 
 [project.scripts]
 forza-train = "forza_ai.training.cli:main"
+forza-run = "forza_ai.runtime:main"
+forza-launch = "forza_ai.launch:main"
+forza-report = "forza_ai.metrics:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

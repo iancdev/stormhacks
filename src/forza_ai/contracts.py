@@ -38,6 +38,7 @@ class SteeringCommand:
     generated_time_ns: int
     observation_time_ns: int
     valid_until_ns: int
+    inference_ms: float | None = None
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,7 @@ _FIELDS = frozenset((
     "timestamp_ns", "ticks", "mode", "reason", "actual_angle_deg", "target_angle_deg",
     "predicted_angle_deg", "torque", "max_abs_torque", "speed_mps", "observation_age_ms",
     "input_status", "inference_ms", "prediction_id", "shadow", "allow_arm", "recording",
-    "network", "transport", "route_active", "human_interventions", "error", "closed",
+    "network", "transport", "route_active", "human_interventions", "error", "closed", "hardware_mode",
 ))
 _SENSITIVE = ("token", "secret", "password", "authorization", "credential", "key")
 
@@ -267,7 +267,7 @@ const token='__TOKEN__';const el=id=>document.getElementById(id);const fmt=(v,n=
 function plot(rows){const keys=['actual_angle_deg','target_angle_deg','predicted_angle_deg'];const ids=['actualLine','targetLine','predictionLine'];let scale=5;for(const r of rows)for(const k of keys)if(Number.isFinite(r[k]))scale=Math.max(scale,Math.abs(r[k]));
  keys.forEach((key,i)=>{let path='',open=false;rows.forEach((r,j)=>{const v=r[key];if(!Number.isFinite(v)){open=false;return;}const x=j*1000/Math.max(1,rows.length-1),y=110-v/scale*100;path+=(open?' L':' M')+x.toFixed(1)+','+y.toFixed(1);open=true;});el(ids[i]).setAttribute('d',path);});el('plotInfo').textContent='Latest snapshots · scale ±'+fmt(scale)+'° · up to 18 seconds';}
 async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw Error('HTTP '+response.status);const data=await response.json(),s=data.status;
- el('health').textContent=data.stale?'STALE · steering status unknown':s.shadow?'SHADOW · no motor control':'LIVE · '+(s.mode||'waiting').toUpperCase();el('health').className='badge '+(data.stale?'bad':'good');
+ el('health').textContent=data.stale?'STALE · steering status unknown':s.shadow?'SHADOW · no motor control':(s.hardware_mode==='simulation'?'SIMULATION · ':'LIVE · ')+(s.mode||'waiting').toUpperCase();el('health').className='badge '+(data.stale?'bad':'good');
  el('actual').textContent=fmt(s.actual_angle_deg);el('target').textContent=fmt(s.target_angle_deg);el('speed').textContent=fmt(typeof s.speed_mps==='number'?s.speed_mps*3.6:null);el('age').textContent=fmt(s.observation_age_ms);
  el('mode').textContent=s.shadow?'shadow (motor disabled)':s.mode||'—';el('reason').textContent=s.reason||'—';el('input').textContent=s.input_status||'—';el('torque').textContent=fmt(s.torque,3);el('inference').textContent=fmt(s.inference_ms)+' ms';el('freshness').textContent=fmt(data.snapshot_age_ms)+' ms';
  el('route').textContent=s.route_active===true?'Route in progress':s.route_active===false?'No active route':'—';el('interventions').textContent=fmt(s.human_interventions,0);
