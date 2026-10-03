@@ -1,4 +1,5 @@
 """Epoch-boundary resumable training, evaluation, and portable weight export."""
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 import json
 import math
@@ -63,6 +64,28 @@ def load_checkpoint(path):
         raise ValueError('unsupported checkpoint format or architecture')
     Preprocessing(**value['preprocessing'])
     return value
+
+
+def _recover_best(saved, checkpoint_path):
+    """The last checkpoint is authoritative; best.pt is a repairable projection."""
+    snapshot = saved.get('best_checkpoint')
+    if snapshot is None:
+        # Compatibility with initial v1 files, and with resuming best.pt itself.
+        if saved['history'][-1]['validation']['model']['rmse_deg'] == saved['best_rmse_deg']:
+            snapshot = {key: value for key, value in saved.items() if key != 'best_checkpoint'}
+        else:
+            best_path = Path(checkpoint_path).parent / 'best.pt'
+            if not best_path.is_file():
+                raise ValueError('legacy checkpoint has no recoverable best.pt; restore the original best checkpoint')
+            snapshot = load_checkpoint(best_path)
+    if (snapshot['history'][-1]['validation']['model']['rmse_deg'] != saved['best_rmse_deg']
+            or snapshot['dataset_fingerprints'] != saved['dataset_fingerprints']
+            or snapshot['train_sessions'] != saved['train_sessions']
+            or snapshot['validation_sessions'] != saved['validation_sessions']
+            or snapshot['preprocessing'] != saved['preprocessing']
+            or snapshot['epoch'] > saved['epoch']):
+        raise ValueError('best checkpoint does not match resumed run')
+    return deepcopy({key: value for key, value in snapshot.items() if key != 'best_checkpoint'})
 
 
 def _metrics(predictions, targets, mean):
@@ -132,6 +155,7 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
     model = SteeringModel().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     start, history, best = 0, [], float('inf')
+    best_snapshot = None
     if saved:
         model.load_state_dict(saved['model_state'])
         optimizer.load_state_dict(saved['optimizer_state'])
@@ -141,6 +165,9 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
             torch.cuda.set_rng_state_all(saved['cuda_rng_state'])
     if epochs <= start:
         raise ValueError(f'checkpoint already completed {start} epochs; target epochs must be greater')
+    if saved:
+        best_snapshot = _recover_best(saved, resume)
+        atomic_save(best_snapshot, output / 'best.pt')
     dataset = SteeringDataset(train_sessions, preprocessing)
     mean = float(np.mean([s.angle_deg for session in train_sessions for s in session.samples]))
     for epoch in range(start, epochs):
@@ -178,9 +205,14 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
             'torch_rng_state': torch.get_rng_state(),
             'cuda_rng_state': torch.cuda.get_rng_state_all() if device.type == 'cuda' else [],
         }
-        atomic_save(checkpoint, output / 'last.pt')
         if improved:
-            atomic_save(checkpoint, output / 'best.pt')
+            # state_dict tensors alias live weights; freeze them before the next epoch.
+            best_snapshot = deepcopy(checkpoint)
+        checkpoint['best_checkpoint'] = best_snapshot
+        # Publish recoverable state first. A crash before best.pt is published is
+        # repaired from this snapshot at resume, even when later epochs worsen.
+        atomic_save(checkpoint, output / 'last.pt')
+        atomic_save(best_snapshot, output / 'best.pt')
         print(json.dumps(history[-1]), flush=True)
     return checkpoint
 

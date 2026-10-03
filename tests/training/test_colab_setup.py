@@ -101,3 +101,7 @@ def test_notebook_synthetic_cells_execute_locally(tmp_path):
     for cell in ['archive-helpers', 'data', 'train', 'evaluate-export']:
         exec(cells[cell].replace('/content/', str(tmp_path) + '/'), scope)
     assert (scope['EXPORT'] / 'model.pt').is_file()
+    first_export = scope['EXPORT']
+    exec(cells['evaluate-export'], scope)
+    assert scope['EXPORT'] != first_export
+    assert (scope['EXPORT'] / 'model.pt').is_file()

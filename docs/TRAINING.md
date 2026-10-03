@@ -84,7 +84,9 @@ near-identical conditions, also evaluate a separately collected route/day.
 `last.pt` contains model, Adam optimizer, completed epoch, random state, history,
 configuration, split IDs, and content fingerprints including images. `best.pt`
 is the checkpoint with lowest held-out RMSE. Writes use a temporary file followed
-by replace. Persist the run directory outside Colab's ephemeral filesystem.
+by replace. `last.pt` embeds a frozen best-checkpoint snapshot; resume repairs
+`best.pt` from that snapshot before training, including after an interrupted pair
+of checkpoint writes. This increases checkpoint storage to preserve recoverability. Persist the run directory outside Colab's ephemeral filesystem.
 A stopped partial epoch is repeated from the last completed checkpoint.
 `resume --epochs N` means a **total** of N epochs; saved configuration is reused.
 Resume writes into the checkpoint directory. To relocate a run, copy the whole
@@ -148,6 +150,6 @@ notebook for repository bootstrap; a test enforces equality.
 
 Real checkpoints persist under `RUN` on Drive; synthetic defaults are ephemeral.
 Set `RESUME = True` and a higher total `EPOCHS` to continue. Export folders include
-the target epoch count; choose a new export destination when reevaluating the
+the target epoch count and a unique suffix, including repeated evaluations of the
 same epoch. Notebook cells are locally smoke-tested, but Google authentication,
 Drive mounting, and GPU execution still require validation in Colab.
