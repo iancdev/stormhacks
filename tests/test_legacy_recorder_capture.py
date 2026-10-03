@@ -66,7 +66,7 @@ def read_csv(path):
 
 
 def install_hardware_mocks(record, monkeypatch, tmp_path, frames, *, active=True,
-                           buttons=None, backjump=None, config=None):
+                           buttons=None, backjump=None, config=None, telemetry_steer=None):
     clock = Clock()
     camera = Camera(clock, frames)
     instances = []
@@ -108,7 +108,8 @@ def install_hardware_mocks(record, monkeypatch, tmp_path, frames, *, active=True
         @property
         def latest_ns(self):
             race_on = active(clock.now) if callable(active) else active
-            return (clock.now - 3_000_000, int(race_on), 15.0, 0,
+            steer = telemetry_steer(len(camera.calls)) if telemetry_steer else 0
+            return (clock.now - 3_000_000, int(race_on), 15.0, steer,
                     12.5, 100.0, .125, 12000, 3, 234, 5, 800)
 
     monkeypatch.setitem(sys.modules, "dxcam", SimpleNamespace(create=lambda **kwargs: camera))
@@ -485,3 +486,31 @@ def test_telemetry_retains_extended_fields_precise_clock_and_rewind_watchdog(rec
     assert snapshots[1][0][0] == 1_000_000_000
     assert snapshots[1] == snapshots[2]  # Invalid data never replaces a sample or triggers rewind.
     assert reader.error is None and sock.closed
+
+
+def test_game_steering_takeover_discards_runup_and_resumes_new_segment(record, monkeypatch, tmp_path):
+    # Human wheel is 10 degrees throughout. Learn game-steer / wheel-angle = 1,
+    # then expose six fresh frames controlled by the game, followed by recovery.
+    install_hardware_mocks(
+        record, monkeypatch, tmp_path, [image(80) for _ in range(200)],
+        telemetry_steer=lambda call: 120 if 111 <= call <= 116 else 10)
+    record.main(["record", "--fps", "30", "--drop-seconds", "1"])
+    session = next((tmp_path / "recordings").iterdir())
+    metadata = json.loads((session / "meta.json").read_text())
+    labels, timing = read_csv(session / "labels.csv"), read_csv(session / "capture_timing.csv")
+    assert metadata["takeovers"] == 1 and metadata["rewinds"] == 0
+    assert metadata["segments"] == 2
+    assert metadata["discarded_by_rewind_or_takeover"] == 15
+    assert metadata["discarded_at_stop"] > 0
+    assert metadata["dropped"] == 0
+    assert_frame_accounting(metadata)
+    original = [t for t in timing if t["segment"] == "0"]
+    resumed = [t for t in timing if t["segment"] == "1"]
+    assert original and resumed
+    # The buffered run-up and all model-independent game-control frames are gone.
+    assert max(int(t["capture_index"]) for t in original) < 110
+    assert int(resumed[0]["capture_index"]) == 145  # 30 matching frames after detection.
+    assert int(resumed[0]["frame"]) == 115  # Original allocated IDs survive discarded rows.
+    assert int(resumed[0]["frame"]) > int(original[-1]["frame"]) + 1
+    assert all(row["tele_steer"] == "10" for row in labels)
+    assert [row["frame"] for row in labels] == [row["frame"] for row in timing]
