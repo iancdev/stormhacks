@@ -278,3 +278,190 @@ GitHub search (queries: "Forza Horizon 4 self driving behavior cloning", "PilotN
 ## Task 3 summary note
 Searched arXiv API (`all:forza` — 18 hits, almost all surname "Forza" false positives; only relevant: 2412.03568 Matrix, 2506.18901 RealPlay), Semantic Scholar API (`forza horizon`, `forza driving imitation learning` — only YOLOv8-FH4 paper + non-technical hits), thesis repositories via site-targeted web search (diva-portal.org, repository.tudelft.nl, ntnuopen, dspace.cvut.cz, publications.lib.chalmers.se, theseus.fi, IADT onshow — the nearest, Manu Jose's "Pinewood Rally" thesis, is a Unity waypoint-AI game project, not Forza and no dataset). Also surfaced: jimhoggey/SelfdrivingcarForza (FH3 OpenCV lane-detection research project, prerecorded-video approach, no data) and an H-BRS course project "Self-Driving car in Forza" (FH4 ConvNeXt-LSTM, Ibrahim Shakir Syed — LinkedIn only, no data). Verdict for task 3: the ONLY academically-originated downloadable Forza frame+control dataset is The Matrix Dataset (FH5, discrete 1 Hz D/DR/DL labels). No thesis or paper releases FH4/FH5 frames with wheel-angle or gamepad-axis steering + speed.
 
+## richstokes/Forza-data-tools — FH4_packetformat.dat layout doc + Go telemetry tool  [PARTIAL]  (task 4)
+- URL: https://github.com/richstokes/Forza-data-tools ; layout doc https://github.com/richstokes/Forza-data-tools/blob/master/FH4_packetformat.dat (raw fetched and read in full)
+- Maintainer: richstokes
+- Date (created / last updated): repo created 2019-06-14, last push 2026-06-06 (verified via GitHub API); 115 stars
+- License: GPL-3.0 (verified via GitHub API license field)
+- Size (frames / hours / GB): n/a — tool + packet-format doc; no telemetry logs shipped (only `dash/sample.json`, a one-packet dashboard sample)
+- Image resolution & camera view: n/a
+- Label columns & units (degrees / normalized / gamepad axis): FH4_packetformat.dat lists the full 324-byte wire format field-by-field (s32 IsRaceOn, ..., s32 CarCategory, u32 HorizonUnknown1, u32 HorizonUnknown2, f32 PositionX/Y/Z, f32 Speed "meters per second", ..., s8 Steer, s8 NormalizedDrivingLine, s8 NormalizedAIBrakeDifference, u8 HorizonTrailingUnknown)
+- Speed included: yes — f32 Speed explicitly documented as m/s
+- Per-frame synced: n/a
+- Download method: git clone / raw file; Go binary `fdt` logs telemetry to CSV with `-c log.csv`, `-z` flag selects the Horizon layout for FH4/5/6
+- Known problems: the 12-byte Horizon extension semantics are community guesses (CarCategory + 2 unknowns); no published data
+- Notes (offset agreement): AGREES with our offsets exactly — IsRaceOn s32 @0, Speed f32 @256 (m/s), Steer s8 @320, packet = 324 bytes incl. trailing u8 @323. This is the cleanest single-file FH4 layout doc found; it also notes "older 323-byte packets end before this field".
+
+## Forza Data Out packet-layout documentation status  [PARTIAL]  (task 4)
+- URL: forums.forza.net/t/data-output/74308 (original FH4 packet-format discovery thread); support.forzamotorsport.net/hc/en-us/articles/21742934024211-Forza-Motorsport-Data-Out-Documentation (official FM doc); forums.forzamotorsport.net turn10 post m926839 (original FM7 spec, linked from nettrom/fdp.py)
+- Maintainer: Forza community / Turn 10
+- Date (created / last updated): forum thread ~2018-2019; forums retired July 2026 (verified: forums.forza.net now serves a "Forza Forums Farewell" page, all threads 410-gone)
+- License: n/a
+- Size: n/a
+- Label columns & units: n/a
+- Speed included: n/a
+- Per-frame synced: n/a
+- Download method: n/a — the forum thread content survives only in search-cache excerpts and mirrors
+- Known problems: BOTH primary sources are now unreachable — forums.forza.net retired (verified farewell page 2026-10-03), and the support.forzamotorsport.net article returned HTTP 403 to our fetch (unverified; it documents the FM2023 311+20=331-byte format, not FH4 anyway). The de-facto FH4 spec now lives in code comments/struct definitions of the parsers below.
+- Notes: Cached forum excerpts document the FH4 packet as: [0]-[231] FM7 sled, [232]-[243] "new unknown data" (12 bytes), [244]-[322] FM7 Car Dash data, [323] unknown trailing byte — i.e. exactly our layout (Speed @244+12=256, Steer @244+76=320). geeooff/forza-data-web (C#) was cited by Grvs44 as an independent layout source (repo confirmed to exist with ForzaDataReader.HorizonExtras.cs; offsets unverified).
+
+## nettrom/forza_motorsport — Python FM7/FH4 Data Out parser + CSV/TSV logger  [PARTIAL]  (task 4)
+- URL: https://github.com/nettrom/forza_motorsport (fdp.py fetched raw and read in full)
+- Maintainer: Morten Wang (nettrom)
+- Date (created / last updated): copyright 2018 in fdp.py header; 14 commits, 56 stars (verified via repo page)
+- License: MIT (LICENSE file + header comment verified)
+- Size: no data shipped — user records own TSV/CSV via data2file.py
+- Label columns & units: all sled+dash fields as named props; `speed` = wire value (m/s), `steer` = s8 -127..127
+- Speed included: yes (m/s as sent on the wire)
+- Per-frame synced: n/a
+- Download method: pip-able repo; `python data2file.py -p fh4 <port> out.csv`
+- Known problems: FH4 path does `patched_data = data[:232] + data[244:323]` — it silently DISCARDS the 12-byte Horizon extension and the trailing byte rather than documenting them; no length validation before slicing.
+- Notes (offset agreement): AGREES (functionally) — after patching, the FM7 dash struct places Speed at original offset 256 (f32) and Steer at original offset 320 (s8); IsRaceOn i32 @0. Oldest confirmed Python FH4 parser; jasperan's code below is a clear derivative.
+
+## makvoid/Blog-Articles Forza-Telemetry DataPacket.py — Python parser  [PARTIAL]  (task 4)
+- URL: https://github.com/makvoid/Blog-Articles/blob/main/Forza-Telemetry/util/data_packet.py (fetched raw, read in full); companion to a telemetry blog series
+- Maintainer: makvoid
+- Date (created / last updated): unverified
+- License: unverified (no license check performed on repo)
+- Size: code only
+- Label columns & units: `speed` wire f32 m/s converted to mph (*2.237); `steering_angle` = s8 -127..127; throttle/brake/clutch/handbrake 0-255 -> %
+- Speed included: yes (m/s raw; displayed as mph)
+- Per-frame synced: n/a
+- Download method: git clone
+- Known problems: the 12-byte Horizon extension is guessed as `car_type`(i32 @232) + `impact_x`/`impact_y` (f32 @236/240); display-unit conversion makes raw values non-obvious; `_convert` returns int-percent for pedals.
+- Notes (offset agreement): AGREES — `_horizon_format = '<iI27f4i20f5i' + 'i19fH6B4b'` = exactly 324 bytes; attribute order places `speed` at wire offset 256 (f32 m/s) and `steering_angle` at 320 (s8); `active` = IsRaceOn i32 @0. 323-vs-324 handled by naming the last byte `unknown`.
+
+## nikidziuba/Forza_horizon_data_out_python — minimal Python UDP server  [PARTIAL]  (task 4)
+- URL: https://github.com/nikidziuba/Forza_horizon_data_out_python (server.py + data_format.txt both fetched and read in full)
+- Maintainer: nikidziuba
+- Date (created / last updated): 3 commits; dates unverified; 14 stars
+- License: none visible
+- Size: code only
+- Label columns & units: dict of all wire fields; Speed f32 m/s, Steer s8
+- Speed included: yes
+- Per-frame synced: n/a
+- Download method: git clone
+- Known problems: data_format.txt ENDS at NormalizedAIBrakeDifference (@322) — the format covers only 323 bytes, silently dropping the FH4 trailing byte; no packet-length validation (it just consumes fields sequentially, so a 324-byte packet still parses correctly); decoder reads sequentially rather than by absolute offset.
+- Notes (offset agreement): AGREES — `hzn HorizonPlaceholder` is an explicit 12-byte skip @232-243, so Speed lands @256 (f32), Steer s8 @320, IsRaceOn s32 @0. Agreement is positional (sequential decode), not by offset constants.
+
+## jasperan/forza-horizon-5-telemetry-listener — Python FH4/FH5 listener + dashboard/analytics platform  [PARTIAL]  (task 4)
+- URL: https://github.com/jasperan/forza-horizon-5-telemetry-listener (src/data_packet.py fetched raw and read in full; repo tree verified)
+- Maintainer: jasperan
+- Date (created / last updated): created 2021-11-10, pushed 2026-09-15 (verified via GitHub API); 11 stars
+- License: none detected by GitHub (LICENSE file is a 56-byte stub — effectively unlicensed)
+- Size: no telemetry data shipped; runtime DB/JSON records gitignored
+- Label columns & units: identical prop names to nettrom (`speed` m/s wire, `steer` s8)
+- Speed included: yes (m/s)
+- Per-frame synced: n/a
+- Download method: git clone; `python app.py --no-db` for dashboard-only mode
+- Known problems: `data_packet.py` is a trimmed copy of nettrom's fdp.py — same `data[:232] + data[244:323]` patch, drops Horizon extension + trailing byte; Oracle-DB heritage makes the full stack heavy, but --no-db mode works.
+- Notes (offset agreement): AGREES (same scheme as nettrom — Speed @256, Steer s8 @320, IsRaceOn i32 @0). Most feature-rich Python FH telemetry platform found (dashboard, lap/session tracking, track auto-mapping, coach) — relevant tooling reference for a Tiger Data analytics demo even though it ships no data.
+
+## Grvs44/Forza-Telemetry-Export — Python package exporting telemetry to CSV/SQLite/binary  [PARTIAL]  (task 4)
+- URL: https://github.com/Grvs44/Forza-Telemetry-Export (export.py, dashh_fields.csv, unpack_horizon.py, LICENSE, README all fetched and read)
+- Maintainer: Elli Greaves (Grvs44)
+- Date (created / last updated): copyright 2025; current HEAD verified via git tree API
+- License: Clear BSD (LICENSE file read in full)
+- Size: no data shipped
+- Label columns & units: dash_fields.csv column order = PositionX/Y/Z,Speed,Power,Torque,TireTemps,Boost,Fuel,DistanceTraveled,BestLap,LastLap,CurrentLap,CurrentRaceTime,LapNumber,RacePosition,Accel,Brake,Clutch,HandBrake,Gear,Steer,NormalizedDrivingLine,NormalizedAIBrakeDifference; dashh_fields.csv adds CarCategory,Unknown1,Unknown2 for the 12-byte extension
+- Speed included: yes (f32 m/s wire)
+- Per-frame synced: n/a
+- Download method: pip package (`python -m forza_telemetry_export.export_csv ... {sled,dash,dashh,dashm}`)
+- Known problems: README calls the Horizon extension "3 8-byte numbers" (should be 3x4 bytes — the struct format `'III'` is correct, the prose is wrong); Horizon trailing byte handling is a workaround (`unpack_horizon` yields `t[:-1]`); README describes extension semantics as unknown.
+- Notes (offset agreement): AGREES — `get_format(DASHH) = sled + 'III' + dash + 'B'` = 232+12+79+1 = 324 bytes exactly; Speed @256 f32, Steer @320 (dash 'bbb' tail: Steer, DrivingLine, AIBrakeDiff @320-322, then trailing 'B' @323); IsRaceOn i32 @0. Also documents the four packet sizes: SLED 232, DASH 311, DASHH 324, DASHM 331 (FM2023).
+
+## bobbythehuman/Race-Telemetry-Package (PyPI "RaceTelemetry") — multi-game Python telemetry lib, FH4/5/6  [PARTIAL]  (task 4)
+- URL: https://github.com/bobbythehuman/Race-Telemetry-Package ; PyPI https://pypi.org/project/RaceTelemetry/ ; FH4 struct https://raw.githubusercontent.com/bobbythehuman/Race-Telemetry-Package/HEAD/src/RaceTelemetry/data_structures/FH4_struct.py (fetched and read in full)
+- Maintainer: bobbythehuman
+- Date (created / last updated): PyPI latest 5.10.11.post1 (verified via pypi.org/pypi/RaceTelemetry/json); PyPI page itself JS-gated
+- License: LGPL-2.1 (LICENSE file read — GNU Lesser GPL v2.1 header)
+- Size: library only; has tests/Game_Specific/Forza Horizon 4,5,6 examples
+- Label columns & units: ctypes struct with full field names; Speed f32 m/s, Steer s8 -127..127; commonFieldMap exposes speed/steering/throttle/brake
+- Speed included: yes (m/s)
+- Per-frame synced: n/a
+- Download method: `pip install RaceTelemetry`
+- Known problems: `_pack_ = 1` is commented out in the ctypes struct — works only because natural alignment introduces no padding before the byte fields; struct declares 323 bytes of fields and ctypes pads sizeof to 324. Horizon extension is named CarCategory(i32)/SmashableVelDiff(f32)/SmashableMass(f32) — the Smashable* interpretation is a community guess (same names as Ayin1412's drive.py).
+- Notes (offset agreement): AGREES — DashData struct: IsRaceOn c_int32 @0, 3-field Horizon extension @232-243, Speed c_float @256, Steer c_int8 @320. The only pip-installable Python package verified to handle the FH4 324-byte layout.
+
+## ricky5932TW/End2End-autodrive-image-steer — forza_autodrive/telemetry.py  [PARTIAL]  (task 4)
+- URL: https://github.com/ricky5932TW/End2End-autodrive-image-steer/blob/main/forza_autodrive/telemetry.py (fetched raw, read in full)
+- Maintainer: ricky5932TW
+- Date (created / last updated): 2026-era (from task 1 entry)
+- License: none stated
+- Size: parser only (dataset not released, per task 1)
+- Label columns & units: returns {Speed: f32 @256 (m/s), Gear: u8 @319, Steer: s8 @320}; ~25 more fields listed but commented out, including IsRaceOn i32 @0
+- Speed included: yes (m/s)
+- Per-frame synced: n/a — threaded receiver keeps latest packet + age
+- Download method: git clone
+- Known problems: most fields commented out (parser only emits Speed/Gear/Steer); raises on any non-324-byte packet.
+- Notes (offset agreement): AGREES exactly — `DASH_PACKET_SIZE = 324`, `Speed: _f32(data, 256)`, `Steer: _s8(data, 320)`, `Gear: _u8(data, 319)`, commented `#"IsRaceOn": _i32(data, 0)`. Byte-for-byte our offsets.
+
+## shoal-rat/Horizon_FSD — forza_telemetry.py + docs/telemetry_format.md  [PARTIAL]  (task 4)
+- URL: https://github.com/shoal-rat/Horizon_FSD/blob/main/forza_telemetry.py (fetched raw, read in full)
+- Maintainer: shoal-rat
+- Date (created / last updated): 2026-06 (task 1 entry)
+- License: unverified
+- Size: parser only; also `telemetry_probe` companion per docstring
+- Label columns & units: full ~94-field dataclass; Speed m/s, AccelInput/BrakeInput 0..255, Steer s8 -127..127 (derived `steer_norm` = steer/127, `throttle` = accel/255); GEAR_SHIFTING = 11 sentinel documented
+- Speed included: yes (m/s; speed_kmh/mph properties)
+- Per-frame synced: n/a
+- Download method: git clone
+- Known problems: targets FH6 (same wire format as FH4/5); asserts finite values on a subset of physics fields — drops NaN packets entirely.
+- Notes (offset agreement): AGREES exactly — SPEC struct is byte-identical to ours: is_race_on i @0, horizon_car_category i @232 + 2 unknowns @236/240, position @244, speed f @256, gear B @319, steer b @320, trailing B @323; `assert PACKET_SIZE == 324`. Docstring says layout "CONFIRMED against live FH6 in Phase 0"; also tolerates 323-byte older-build packets (pads with \x00). Strongest independent live confirmation found.
+
+## Ayin1412/ForzaHorizon6-VisionAI — telemetry block inside scripts/drive.py  [PARTIAL]  (task 4)
+- URL: https://github.com/Ayin1412/ForzaHorizon6-VisionAI/blob/main/scripts/drive.py (fetched raw; TELEMETRY_FIELDS block read in full)
+- Maintainer: Wenhao Li (Ayin1412)
+- Date (created / last updated): 2026-07 (task 1 entry)
+- License: Apache-2.0 for code (LICENSE/NOTICE present); dataset artifacts CC BY-NC 4.0 (per task 1)
+- Size: parser only
+- Label columns & units: full field list; Speed f m/s; Steer 'b' s8; Steer is used with steer_calibration.json/steer_map.json for gamepad-unit mapping
+- Speed included: yes (m/s)
+- Per-frame synced: n/a
+- Download method: git clone
+- Known problems: Horizon extension named `("CarGroup","I")`, `("SmashableVelDiff","f")`, `("SmashableMass","f")` — a different guess at the 12 bytes than the CarCategory/Unknown convention; WheelInPuddle fields typed 'i' instead of 'f' (4 bytes either way, offsets unaffected, values misinterpreted); format string ends with 'x' pad byte for the trailing unknown.
+- Notes (offset agreement): AGREES — IsRaceOn 'i' @0, Speed f @256, Steer b @320, calcsize = 324 (incl. trailing 'x'). The alternative CarGroup/Smashable* naming for bytes 232-243 is worth noting since two repos (this + RaceTelemetry) now use it vs the CarCategory convention elsewhere.
+
+## Estetika101/pacefinderapp — parsers/forza.py  [ADJACENT]  (task 4)
+- URL: https://github.com/Estetika101/pacefinderapp/blob/main/parsers/forza.py (fetched raw, read in full)
+- Maintainer: Estetika101
+- Date (created / last updated): unverified
+- License: unverified
+- Size: parser only
+- Label columns & units: standard FM7 dash field names; speed raw (m/s) + derived speed_mph; steer raw s8
+- Speed included: yes
+- Download method: git clone
+- Known problems: MISLABELED packet sizes — `FM_PACKET_SIZE_FH = 331` is claimed as "Forza Horizon 4/5 Car Dash" but 331 is actually the FM2023 extended packet; the FH4/FH5 324-byte packet is REJECTED by parse_forza (returns None for any length other than 311/331). It also appends tireWear+trackOrdinal as if they were a Horizon extension.
+- Notes (offset agreement): DISAGREES / cannot parse FH4 — its dash block is the FM layout at base 232 (Speed would be @244, Steer @308 in FM packets). Using this parser on FH4 data yields nothing; using it as an offset reference would be actively wrong for Horizon packets.
+
+## 0x20F/forza-telemetry — Rust Data Out decoder + session CSV recorder (author of the task-2 Kaggle dataset)  [PARTIAL]  (task 4)
+- URL: https://github.com/0x20F/forza-telemetry (src/decoder/formats.rs fetched raw, read in full; repo + captures/ tree verified)
+- Maintainer: 0x20F (= Kaggle alexhexan, per task 2 entry)
+- Date (created / last updated): created 2023-03-24, pushed 2026-05-09 (verified via GitHub API); 4 stars
+- License: none (GitHub license field = null)
+- Size: tool + tiny capture artifacts — captures/ contains ONE `*.session.toml` (schema_version=2, source=fm2023_extras, car_ordinal 1655, track 1640, frames_written=20848) + one `frame_14538_drift.json`; the referenced CSV itself is NOT in the repo
+- Label columns & units: RawPacket fields; CSV schema v2 (see src/csv_writer); tire temps converted F->C on ingest
+- Speed included: yes (f32 m/s at dash base+12)
+- Per-frame synced: per-packet; adds recv_time_ns timestamps on receipt
+- Download method: git clone / cargo build (`forza-telemetry record --port 7777 --out captures/`)
+- Known problems: not Python (Rust); ships no usable telemetry log — only a session sidecar for a missing CSV; unlicensed.
+- Notes (offset agreement): AGREES — Source::DashHorizon (324 bytes) sets dash_base=244; Speed @244+12=256 f32, Steer @244+76=320 i8, IsRaceOn i32 @0. Cross-language corroboration. Its Kaggle FM7 dataset (task 2 entry) is the only published decoded-telemetry log found anywhere in this survey.
+
+## austinbaccus/forza-telemetry — C#/Electron recorder + dashboard  [ADJACENT]  (task 4)
+- URL: https://github.com/austinbaccus/forza-telemetry (ForzaCore/FMData.cs, PacketParse.cs, Program.cs, DataPacket.cs fetched raw and read; tree verified)
+- Maintainer: austinbaccus
+- Date (created / last updated): unverified
+- License: present (1070-byte LICENSE — MIT-sized; type unverified)
+- Size: app only — `data/` dir contains an empty `default` file; recorded CSVs are user-local
+- Label columns & units: DataPacket class fields; Speed m/s wire, Steer int (s8)
+- Speed included: yes
+- Per-frame synced: recorder decimates to recordRateMS = 50 ms (20 Hz), not per-packet
+- Download method: git clone; ElectronCgi app
+- Known problems: type sloppiness — IsRaceOn read as float at @0 (works accidentally since any nonzero i32 != 0f... reads 01 00 00 00 as 1.4e-45 > 0); CarOrdinal/CarClass/PI/Drivetrain/NumCylinders read as GetUInt8 (only the low byte of each i32!); WheelOnRumbleStrip read as f32 instead of i32. Offsets are right; decode types are sloppy.
+- Notes (offset agreement): AGREES — `AdjustToBufferType` sets `FMData.BufferOffset = 12` for 324-byte FH4 packets, shifting dash reads so Speed = 244+12 = 256 and Steer = 308+12 = 320; 232/311/324/331 lengths all dispatched.
+
+## Task 4 summary note
+TELEMETRY LOGS: the only published decoded-telemetry dataset found anywhere remains the Kaggle `alexhexan/fm7-rio-de-janeiro-race-telemetry` (task 2 entry — FM7 311-byte layout, CC0, ~62 MB, 5 laps). NO public FH4/FH5 CSV/parquet telemetry log was found; every tool records user-local files (nettrom, Grvs44, richstokes, jasperan, austinbaccus, Yurikada, 0x20F) and none ship their captures. 0x20F's repo has one session sidecar for a CSV that isn't included.
+PACKET LAYOUT: FH4/FH5 dash = 232-byte sled + 12-byte Horizon extension (@232-243, semantics unverified — two naming conventions: CarCategory+Unknown1+Unknown2 vs CarGroup+SmashableVelDiff+SmashableMass) + 79-byte FM dash block @244-322 + 1 trailing byte @323 = 324 bytes. Our offsets (IsRaceOn i32 @0, Speed f32 @256 m/s, Steer s8 @320, Gear u8 @319, Accel u8 @315, Brake u8 @316) are confirmed by EVERY FH4-capable parser checked: nettrom, jasperan, nikidziuba, makvoid, Grvs44, RaceTelemetry, ricky5932TW, shoal-rat (asserted + live-verified on FH6), Ayin1412, plus Rust (0x20F) and C# (austinbaccus) corroboration — 12 independent implementations, zero disagreements. One parser (Estetika101/pacefinderapp) mislabels the 331-byte FM2023 packet as FH4/FH5 and would reject real 324-byte Horizon packets. Official docs: Forza forums retired July 2026 (thread 74308 gone, survives in cache excerpts); support.forzamotorsport.net article 403'd to our fetch (FM2023-format doc anyway). Best single doc artifact: richstokes/FH4_packetformat.dat.
+PARSER VALIDATION RECOMMENDATION: unit-test our decoder against makvoid/Grvs44/nettrom equivalent fields on a shared synthetic packet; note tele_steer (s8 game axis, -127..127) is NOT the wheel angle — it is the post-mapping input the game applied, so expect it to differ from steer_deg under speed-sensitive steering limits.
+
