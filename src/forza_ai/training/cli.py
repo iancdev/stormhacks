@@ -24,6 +24,7 @@ def main(argv=None):
     importer = subs.add_parser('import-recording', help='import normally closed record.py output with rounded aligned labels')
     importer.add_argument('source', type=Path)
     importer.add_argument('destination', type=Path)
+    importer.add_argument('--exclude-sessions', type=Path, help='reject source session prefixes from this commented text file')
     importer.add_argument('--expert-mode', choices=['manual'], required=True, help='declare that source labels were human steering')
     synthetic = subs.add_parser('synthetic', help='create deterministic test sessions')
     synthetic.add_argument('output', type=Path)
@@ -61,7 +62,8 @@ def main(argv=None):
     try:
         if args.command == 'import-recording':
             from forza_ai.data.recording import import_recording
-            result = import_recording(args.source, args.destination, expert_mode=args.expert_mode)
+            result = import_recording(args.source, args.destination, expert_mode=args.expert_mode,
+                                      exclude_sessions=args.exclude_sessions)
             print(json.dumps(result, indent=2))
         elif args.command == 'synthetic':
             generate(args.output, args.sessions, args.frames, args.seed)
