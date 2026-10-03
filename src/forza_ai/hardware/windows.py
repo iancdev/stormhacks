@@ -1,8 +1,10 @@
 """Windows TMX/vJoy adapter, owned and called by one local control thread.
 
-Only this adapter writes motor force. No game FFB callback is registered.
+Only this adapter writes our commanded motor force. No game FFB callback is registered.
 Short effects bound a host stall only if the wheel driver honors their duration;
 verify expiry and the calibrated force direction on the real Windows device.
+Opening SDL may reset feedback or engage native autocenter before our settings
+are applied. Stopping our effects does not certify the absence of driver forces.
 """
 
 import importlib
@@ -30,8 +32,11 @@ class WindowsAdapter:
     """Read TMX, forward measured inputs, and renew bounded motor commands.
 
     ``button_map`` maps SDL zero-based buttons to explicitly configured vJoy
-    one-based buttons. An empty map forwards no buttons. Construction opens
-    devices and uploads a zero-force effect, but never runs a motor effect.
+    one-based buttons. An empty map forwards no buttons. Construction never runs
+    our command effect, but SDL device opening can engage native centering.
+    ``autocenter_disabled_confirmed`` reports whether startup explicitly disabled
+    it; a false value means unconfirmed, not necessarily active. Zero torque
+    stops our command effect and does not establish mechanical isolation.
     Call ``set_torque`` more frequently than ``effect_ttl_ms`` while engaged.
     """
 
@@ -70,6 +75,7 @@ class WindowsAdapter:
         self._effect_id = None
         self._sdl_initialized = False
         self._vjoy_acquired = False
+        self._autocenter_disabled_confirmed = False
         self._closed = False
         self._vjoy_id = vjoy_device_id
         self.cleanup_errors: tuple[str, ...] = ()
@@ -144,6 +150,7 @@ class WindowsAdapter:
             self._check_sdl(sdl.SDL_HapticSetGain(self._haptic, 100), "SDL_HapticSetGain")
         if supported & sdl.SDL_HAPTIC_AUTOCENTER:
             self._check_sdl(sdl.SDL_HapticSetAutocenter(self._haptic, 0), "SDL_HapticSetAutocenter")
+            self._autocenter_disabled_confirmed = True
         self._effect = sdl.SDL_HapticEffect()
         self._effect.type = sdl.SDL_HAPTIC_CONSTANT
         self._effect.constant.type = sdl.SDL_HAPTIC_CONSTANT
@@ -173,6 +180,11 @@ class WindowsAdapter:
     def button_count(self) -> int:
         """Number of physical SDL buttons, for validating takeover bindings."""
         return self._button_count
+
+    @property
+    def autocenter_disabled_confirmed(self) -> bool:
+        """Whether SDL explicitly disabled native autocenter at startup."""
+        return self._autocenter_disabled_confirmed
 
     def _attached(self) -> bool:
         return bool(self._sdl.SDL_JoystickGetAttached(self._joystick))
