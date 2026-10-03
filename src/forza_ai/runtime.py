@@ -398,7 +398,8 @@ def main(argv=None):
         else:
             from forza_ai.policies.live import LiveModelPolicy
             policy = LiveModelPolicy(args.model)
-        camera = DXCamCapture(region=tuple(args.crop), fps=args.capture_hz, output_idx=args.display)
+        camera = DXCamCapture(region=tuple(args.crop), fps=args.capture_hz, output_idx=args.display,
+                              foreground_guard=foreground_guard)
     else:
         target = 5.0 if args.target_angle is None else args.target_angle
         if args.backend == "windows" and abs(target) > 15:

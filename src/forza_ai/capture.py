@@ -43,7 +43,7 @@ class DXCamCapture:
     report a timeout instead of racing release against an in-flight grab.
     """
 
-    def __init__(self, region, fps=30, output_idx=0):
+    def __init__(self, region, fps=30, output_idx=0, foreground_guard=None):
         if not isinstance(region, (tuple, list)) or len(region) != 4:
             raise ValueError("region must be (left, top, right, bottom) pixel coordinates")
         for coordinate in region:
@@ -57,6 +57,7 @@ class DXCamCapture:
         self.region = tuple(region)
         self.fps = fps
         self.output_idx = output_idx
+        self.foreground_guard = foreground_guard
         self._lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
         self._stop = threading.Event()
@@ -128,8 +129,18 @@ class DXCamCapture:
             while not self._stop.is_set():
                 if camera.is_capturing:
                     raise RuntimeError("DXcam ring-buffer capture must remain stopped")
+                if self.foreground_guard is not None and not self.foreground_guard.is_active():
+                    with self._lock:
+                        self._frame = None
+                    self._stop.wait(1.0 / self.fps)
+                    continue
                 started_ns = time.monotonic_ns()
                 pixels = camera.grab(region=self.region, copy=False, new_frame_only=True)
+                if self.foreground_guard is not None and not self.foreground_guard.is_active():
+                    with self._lock:
+                        self._frame = None
+                    self._stop.wait(1.0 / self.fps)
+                    continue
                 if pixels is not None:
                     if not isinstance(pixels, np.ndarray) or pixels.dtype != np.uint8 or pixels.shape != expected_shape:
                         raise ValueError("capture must return uint8 HWC RGB matching the requested road crop")

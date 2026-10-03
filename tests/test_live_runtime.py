@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -59,6 +60,38 @@ class FakeModelPolicy:
 
 
 class LiveRuntimeTests(unittest.TestCase):
+    def test_capture_discards_frame_if_focus_changes_during_grab(self):
+        from forza_ai.capture import DXCamCapture
+
+        class Guard:
+            active = True
+
+            def is_active(self):
+                return self.active
+
+        guard = Guard()
+        grabbed = threading.Event()
+
+        class Camera:
+            is_capturing = False
+
+            def grab(self, **kwargs):
+                guard.active = False
+                grabbed.set()
+                return np.zeros((66, 200, 3), dtype=np.uint8)
+
+            def release(self):
+                pass
+
+        with patch("forza_ai.capture._create_camera", return_value=Camera()):
+            capture = DXCamCapture((0, 0, 200, 66), foreground_guard=guard)
+            capture.start()
+            try:
+                self.assertTrue(grabbed.wait(timeout=1))
+                self.assertIsNone(capture.latest())
+            finally:
+                capture.close()
+
     def test_sweep_has_finite_sequence_then_holds_center(self):
         policy = SweepPolicy(5, hold_seconds=2)
         angles = []
