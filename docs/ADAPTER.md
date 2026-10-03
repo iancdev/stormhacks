@@ -40,6 +40,7 @@ Windows placeholder targets are restricted to +/-15 degrees at the CLI. The cont
 ## Interfaces
 
 - `WindowsAdapter.read_state(now_ns)` returns a `WheelState` in physical units.
+- Its timestamp is host poll time. SDL exposes cached axes without a USB report timestamp, so age checks detect host delays but cannot independently establish the age of an unchanged device report.
 - `write_virtual_state(state)` forwards measured steering/pedals and explicitly mapped buttons.
 - `set_torque(value)` consumes a normalized physical-right-positive value; the hardware layer handles SDL sign conversion and clamps it again.
 - `close()` releases force effects, wheel handles, and vJoy ownership.

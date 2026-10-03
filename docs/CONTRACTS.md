@@ -33,7 +33,7 @@ An exported artifact must contain model weights and enough metadata to reconstru
 
 ## Runtime data boundary
 
-`WheelState`: timestamp, physical angle, normalized pedals, buttons, connection status.
+`WheelState`: timestamp, physical angle, normalized pedals, buttons, connection status. For SDL2 polling the timestamp is host poll time, not a hardware report timestamp; attachment checks and fresh polling cannot independently prove the age of an unchanged USB report.
 
 `VehicleState`: host receive timestamp, game timestamp where present, speed, race state, diagnostic telemetry.
 
