@@ -118,14 +118,21 @@ separate recorder/old adapter before starting this runtime, or coordinate a
 different configured Data Out port. This runtime is not the dataset recorder.
 
 ```powershell
-python -m forza_ai.runtime --backend windows --inference-host DESKTOP_LAN_IP --crop LEFT TOP RIGHT BOTTOM --shadow --duration 30 --takeover-button BUTTON_INDEX --status-csv runs/network-shadow.csv
+python -m forza_ai.runtime --backend windows --inference-host DESKTOP_LAN_IP --capture-config config/capture.json --shadow --duration 30 --takeover-button BUTTON_INDEX --status-csv runs/network-shadow.csv
 ```
 
-All uppercase placeholders must be replaced. Crop coordinates are absolute,
-output-local pixels describing the road view; use the same camera/crop as the
-recording process. Do not guess them from the model's 200x66 resized dimensions.
-The game PC sends lossless RGB road crops; preprocessing belongs to the model on
-the desktop. `--display` selects the DXcam output.
+All uppercase placeholders must be replaced. With the incoming `record.py`, use
+its `config/capture.json`: this loads the monitor, exact crop, HUD masks, and
+OpenCV area resize to the recorder's saved dimensions. Capture is RGB rather than
+the recorder's BGR working array; channel-independent masking/resizing preserves
+the RGB image the training loader sees after decoding the recorder's JPEGs.
+Live frames are not JPEG-recompressed. The desktop then applies the exported
+model's own preprocessing (including the final 200x66 resize).
+
+For another recorder that uses unmasked crops, `--crop LEFT TOP RIGHT BOTTOM`
+and `--display` are available instead. These are absolute output-local pixel
+coordinates, not the model's resized dimensions. Use identical camera/crop settings
+for recording and inference. The game PC sends lossless RGB crops over LAN.
 
 Live modes require `ForzaHorizon4.exe` to be the foreground process by default.
 Use `--game-process` only if the actual game EXE differs. Alt-Tabbing disengages

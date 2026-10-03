@@ -360,9 +360,12 @@ def main(argv=None):
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--telemetry", action="store_true", help="listen to FH4 Data Out on loopback")
     parser.add_argument("--telemetry-port", type=int, default=9999)
-    parser.add_argument("--crop", nargs=4, type=int, metavar=("LEFT", "TOP", "RIGHT", "BOTTOM"),
-                        help="absolute road crop matching the training recorder; required with --model")
-    parser.add_argument("--display", type=int, default=0, help="DXcam output index")
+    crop_selection = parser.add_mutually_exclusive_group()
+    crop_selection.add_argument("--crop", nargs=4, type=int, metavar=("LEFT", "TOP", "RIGHT", "BOTTOM"),
+                                help="absolute road crop for a custom recorder without masks")
+    crop_selection.add_argument("--capture-config", type=Path,
+                                help="record.py capture.json: exact monitor, crop, masks, saved-size transform")
+    parser.add_argument("--display", type=int, default=None, help="DXcam output index, for --crop only")
     parser.add_argument("--capture-hz", type=float, default=30.0)
     parser.add_argument("--game-process", default="ForzaHorizon4.exe", help="foreground EXE required for live input")
     parser.add_argument("--status-csv", type=Path)
@@ -386,8 +389,8 @@ def main(argv=None):
     camera = None
     foreground_guard = None
     if live_mode:
-        if args.crop is None or args.backend != "windows":
-            parser.error("live model requires --backend windows and --crop LEFT TOP RIGHT BOTTOM")
+        if (args.crop is None and args.capture_config is None) or args.backend != "windows":
+            parser.error("live model requires --backend windows and --capture-config or --crop")
         if args.target_angle is not None:
             parser.error("--target-angle cannot be combined with a driving model")
         from forza_ai.capture import DXCamCapture
@@ -399,8 +402,18 @@ def main(argv=None):
         else:
             from forza_ai.policies.live import LiveModelPolicy
             policy = LiveModelPolicy(args.model)
-        camera = DXCamCapture(region=tuple(args.crop), fps=args.capture_hz, output_idx=args.display,
-                              foreground_guard=foreground_guard)
+        frame_transform = None
+        if args.capture_config:
+            if args.display is not None:
+                parser.error("capture config owns the monitor index; don't combine it with --display")
+            from forza_ai.capture_config import CaptureConfig
+            capture_config = CaptureConfig.from_json(args.capture_config)
+            region, output_idx = capture_config.region, capture_config.output_idx
+            frame_transform = capture_config.transform
+        else:
+            region, output_idx = tuple(args.crop), args.display or 0
+        camera = DXCamCapture(region=region, fps=args.capture_hz, output_idx=output_idx,
+                              foreground_guard=foreground_guard, frame_transform=frame_transform)
     else:
         target = 5.0 if args.target_angle is None else args.target_angle
         if args.backend == "windows" and abs(target) > 15:

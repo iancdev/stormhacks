@@ -43,7 +43,7 @@ class DXCamCapture:
     report a timeout instead of racing release against an in-flight grab.
     """
 
-    def __init__(self, region, fps=30, output_idx=0, foreground_guard=None):
+    def __init__(self, region, fps=30, output_idx=0, foreground_guard=None, frame_transform=None):
         if not isinstance(region, (tuple, list)) or len(region) != 4:
             raise ValueError("region must be (left, top, right, bottom) pixel coordinates")
         for coordinate in region:
@@ -58,6 +58,7 @@ class DXCamCapture:
         self.fps = fps
         self.output_idx = output_idx
         self.foreground_guard = foreground_guard
+        self.frame_transform = frame_transform
         self._lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
         self._stop = threading.Event()
@@ -145,6 +146,13 @@ class DXCamCapture:
                     if not isinstance(pixels, np.ndarray) or pixels.dtype != np.uint8 or pixels.shape != expected_shape:
                         raise ValueError("capture must return uint8 HWC RGB matching the requested road crop")
                     owned = np.array(pixels, copy=True, order="C")
+                    if self.frame_transform is not None:
+                        owned = self.frame_transform(owned)
+                        if (not isinstance(owned, np.ndarray) or owned.dtype != np.uint8
+                                or owned.ndim != 3 or owned.shape[2] != 3
+                                or not owned.shape[0] or not owned.shape[1]):
+                            raise ValueError("frame transform must return a nonempty uint8 RGB crop")
+                        owned = np.array(owned, copy=True, order="C")
                     owned.flags.writeable = False
                     frame = CapturedFrame(frame_id, started_ns, owned)
                     with self._lock:

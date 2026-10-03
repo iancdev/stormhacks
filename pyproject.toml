@@ -11,10 +11,11 @@ dependencies = ["numpy>=1.24", "Pillow>=10"]
 
 [project.optional-dependencies]
 training = ["torch>=2.2"]
-test = ["pytest>=8"]
+test = ["pytest>=8", "opencv-python>=4.10"]
 hardware = [
   "comtypes; sys_platform == 'win32'",
   "dxcam==0.3.0; sys_platform == 'win32'",
+  "opencv-python>=4.10; sys_platform == 'win32'",
   "PySDL2==0.9.17; sys_platform == 'win32'",
   "pysdl2-dll==2.32.10; sys_platform == 'win32'",
   "pyvjoyffb==0.4; sys_platform == 'win32'",
