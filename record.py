@@ -488,8 +488,9 @@ def cmd_record(args):
         wheel.stop.set()
         if tele:
             tele.stop.set()
-        while pending:                # Ctrl+C keeps the last few seconds
-            flush(block=True)
+        # People usually stop right after a mistake, so Ctrl+C throws away the last few seconds too.
+        discarded_at_stop = len(pending)
+        pending.clear()
         writer.q.put(None)
         writer.join()
         wheel.join(2)
@@ -497,14 +498,16 @@ def cmd_record(args):
     report = gap_report(times, args.fps)
     meta = {"session": session, "config": cfg, "saved_size": size, "fps_target": args.fps,
             "frames": len(times), "segments": segment + 1, "dropped": dropped,
-            "rewinds": rewinds, "discarded_by_rewind": discarded, "drop_seconds": args.drop_seconds,
+            "rewinds": rewinds, "discarded_by_rewind": discarded, "discarded_at_stop": discarded_at_stop,
+            "drop_seconds": args.drop_seconds,
             "rewind_button": args.rewind_button, "vjoy": args.vjoy,
             "telemetry": tele is not None, "steer_units_per_deg": STEER_UNITS_PER_DEG,
             "pedals": "0 = released, 1 = floored", "gaps": report}
     with open(os.path.join(session_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print(f"Saved {len(times)} frames in {segment + 1} segment(s) to {session_dir}\n"
-          f"Rewinds: {rewinds} ({discarded} frames thrown away). Dropped (disk too slow): {dropped}")
+          f"Rewinds: {rewinds} ({discarded} frames thrown away). Last {args.drop_seconds:g}s before "
+          f"Ctrl+C thrown away ({discarded_at_stop} frames). Dropped (disk too slow): {dropped}")
     if report:
         print(f"Frame gaps (ms): median {report['median_ms']}, p99 {report['p99_ms']}, "
               f"max {report['max_ms']}, {report['over_2x']} gap(s) > {2000 / args.fps:.0f} ms")
