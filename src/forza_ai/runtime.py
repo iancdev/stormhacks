@@ -148,7 +148,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
     progress_worker = None
     dashboard = None
     from forza_ai.metrics import RunMetrics
+    from forza_ai.reporting import LiveRates
     metrics = RunMetrics()
+    live_rates = LiveRates()
     try:
         if not math.isfinite(duration) or duration < 0:
             raise ValueError("duration must be finite and nonnegative")
@@ -357,13 +359,20 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                            inference_ms=command.inference_ms if command else None,
                            prediction_id=command.generated_time_ns if command else None,
                            shadow=shadow, allow_arm=not shadow,
+                           policy_name=getattr(policy, "name", "steering policy"),
                            expert_recording=expert if recorder is not None else False,
                            recording=recorder.stats if recorder is not None else None)
             metrics.update(summary)
+            live_rates.update(after_io, frame=frame, prediction_id=summary["prediction_id"],
+                              has_camera=camera is not None)
             if dashboard is not None and after_io >= next_dashboard_ns:
                 dashboard_metrics = metrics.summary()
                 dashboard.publish(dict(summary, route_active=route_active,
                                        human_interventions=dashboard_metrics["human_interventions"],
+                                       metrics=dashboard_metrics, rates=live_rates.summary(),
+                                       limits={"observation_age_ms": controller.config.max_observation_age_ns / 1e6,
+                                               "target_angle_deg": controller.config.target_limit_deg,
+                                               "torque": controller.config.torque_limit},
                                        network="LAN inference" if hasattr(policy, "host") else "local policy"))
                 next_dashboard_ns = after_io + 100_000_000
             if progress_worker is not None:
