@@ -38,7 +38,7 @@ First acceptance milestone: synthetic data validates, trains, and reloads a chec
 
 ## Data and deployment
 
-The gaming PC records frames, wheel inputs, telemetry, and control mode into completed sessions. GitHub stores code and tiny synthetic fixtures; session archives and checkpoints live on Drive or another user-chosen storage destination. GPU training consumes completed archives, validates them, and writes resumable checkpoints. Live inference initially runs on the gaming PC CPU, separate from the faster physical control loop.
+The wheel PC records frames, wheel inputs, telemetry, and control mode into completed sessions. The user confirmed on 2026-10-03 that the wheel is on a different PC from Codex's connected `DESKTOP-0HR4O88`, and selected that connected desktop as the primary GPU training host. Colab remains a fallback. GitHub stores code and tiny synthetic fixtures; session archives and checkpoints are transferred separately. GPU training consumes completed archives, validates them, and writes resumable checkpoints. Live inference initially runs on the wheel PC CPU, separate from the faster physical control loop. Desktop GPU/PyTorch availability is not yet verified.
 
 ## Integration and verification
 
@@ -60,6 +60,6 @@ The gaming PC records frames, wheel inputs, telemetry, and control mode into com
 ## Next integration gates
 
 1. Obtain the existing recorder/sample schema and adapt it to version 1. Sessions require `completed: true` once fully written/transferred; preserve source timestamps and separate human corrections from AI motion.
-2. User runs the notebook synthetic path on Colab, then supplies completed real sessions for GPU training. No real training is scheduled or started automatically.
+2. Set up the portable training CLI on `DESKTOP-0HR4O88`, verify CUDA availability, then transfer completed real sessions for training. Colab notebook is a fallback. No real training is scheduled or started automatically.
 3. User runs the Windows acceptance procedure for passthrough, +/-5-degree stationary tracking, takeover, expiry, and cleanup. Tune PD gains only against observed hardware behavior.
 4. Connect real capture plus `SteeringPredictor` to the runtime in shadow mode, preserving the frame's capture time through inference. Road-force replay remains a later independent increment.

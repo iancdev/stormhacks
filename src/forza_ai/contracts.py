@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class ControlMode(str, Enum):
@@ -46,3 +47,24 @@ class ControlStatus:
     target_angle_deg: float
     actual_angle_deg: float
     torque: float  # normalized [-1, 1], positive physically right
+
+
+@dataclass(frozen=True)
+class CapturedFrame:
+    frame_id: int
+    timestamp_ns: int  # host capture start, conservatively includes grab latency
+    rgb: Any  # uint8 HWC NumPy array; driver imports stay outside contracts
+
+
+@dataclass(frozen=True)
+class ModelObservation:
+    frame: CapturedFrame
+    vehicle: VehicleState  # sample at or before frame time, as during training
+
+    @property
+    def timestamp_ns(self) -> int:
+        return self.frame.timestamp_ns
+
+
+class ObservationUnavailable(RuntimeError):
+    """Expected temporary missing/stale/paused input; inhibit assistance."""
