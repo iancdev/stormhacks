@@ -36,7 +36,13 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 
 ## Telemetry
 - Data Out ON, `127.0.0.1:9999`. Packets are 324 bytes (FH4 "dash" layout), ~60/s while driving.
-- Offsets used in check.py: IsRaceOn int @0, CurrentEngineRpm float @16, Speed float m/s @256, Steer s8 @320. **Speed/steer offsets not yet verified while driving.**
+- Offsets: IsRaceOn int @0, TimestampMS u32 @4, CurrentEngineRpm float @16, AngularVelocityY (yaw rate) float @48, Speed float m/s @256, DistanceTraveled float @292, CurrentRaceTime float @308, Gear u8 @319, Steer s8 @320.
+- **Verified while driving (2026-10-03):** speed matches HUD; telemetry Steer tracks the TMX wheel (corr 0.99, ~1 frame later, same sign). Race-time rewind detection and gear/yaw offsets: in use but not yet confirmed on real data.
+
+## Reading the TMX without killing Forza's FFB
+- SDL's **DirectInput** backend acquires FFB wheels exclusively: running a DirectInput reader while Forza runs killed the wheel's FFB until Forza restarted.
+- Read-only code must set `SDL_HINT_DIRECTINPUT_ENABLED=0` and `SDL_HINT_JOYSTICK_RAWINPUT=1` before `SDL_Init`, then poll `SDL_JoystickUpdate` for up to ~3 s until the device appears. Under RawInput the TMX is named "Thrustmaster TMX", vJoy "HID-compliant game controller"; axes a0/a1/a2 are the same as above. Verified: reads with Forza focused, FFB unaffected.
+- `utils/test.py` (old check.py) still uses DirectInput: only run it with Forza closed.
 
 ## Data collection plan
 - Solo circuit (Rivals/time attack, ghost off if possible), one mid-range B/A-class car, automatic gears, bonnet camera, HUD off, racing line off, lens effects off.
@@ -45,7 +51,9 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 
 ## Status / next
 - DONE: Python/VS Code, TMX calibration, FFB test, vJoy + registry flag, Forza wheel layout, Forza FFB reaches vJoy, telemetry packets arrive, HidHide installed with both python.exe paths allowed.
-- NEXT: tick TMX in HidHide Devices + enable hiding + replug; verify telemetry values while driving; write the passthrough script (TMX → vJoy, Forza constant force → TMX motor, sign to calibrate); then the recorder.
+- DONE (this repo): venv `.venv` + `requirements.txt`; `record.py` (setup/preview crop, record, wheel); `sync_check.py`. Crop in `config/capture.json`: full width, y 330–725, saved 320×66, no masks. Rivals online works with no ghost. First session 20261003_150225 (51 s, ends in a crash; drop last 5 s).
+- Recorder behaviour: frames held `--drop-seconds` (5) before writing; rewind (race clock backwards, or `--rewind-button`) and Ctrl+C discard them. Records only while IsRaceOn=1. Saves hud/ gear patch for sync_check.
+- NEXT: record a session with gear shifts and run `sync_check.py` (screen-vs-telemetry lag); confirm the rewind watchdog on a real rewind; then the passthrough script (TMX → vJoy, Forza constant force → TMX motor, sign to calibrate; consider cancelling Forza FFB in the AI torque).
 
 ## Working rules
 - Test FFB with no game, and vJoy passthrough with no AI. Never debug both at once.
