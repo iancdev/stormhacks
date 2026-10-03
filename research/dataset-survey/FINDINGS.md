@@ -465,3 +465,135 @@ TELEMETRY LOGS: the only published decoded-telemetry dataset found anywhere rema
 PACKET LAYOUT: FH4/FH5 dash = 232-byte sled + 12-byte Horizon extension (@232-243, semantics unverified — two naming conventions: CarCategory+Unknown1+Unknown2 vs CarGroup+SmashableVelDiff+SmashableMass) + 79-byte FM dash block @244-322 + 1 trailing byte @323 = 324 bytes. Our offsets (IsRaceOn i32 @0, Speed f32 @256 m/s, Steer s8 @320, Gear u8 @319, Accel u8 @315, Brake u8 @316) are confirmed by EVERY FH4-capable parser checked: nettrom, jasperan, nikidziuba, makvoid, Grvs44, RaceTelemetry, ricky5932TW, shoal-rat (asserted + live-verified on FH6), Ayin1412, plus Rust (0x20F) and C# (austinbaccus) corroboration — 12 independent implementations, zero disagreements. One parser (Estetika101/pacefinderapp) mislabels the 331-byte FM2023 packet as FH4/FH5 and would reject real 324-byte Horizon packets. Official docs: Forza forums retired July 2026 (thread 74308 gone, survives in cache excerpts); support.forzamotorsport.net article 403'd to our fetch (FM2023-format doc anyway). Best single doc artifact: richstokes/FH4_packetformat.dat.
 PARSER VALIDATION RECOMMENDATION: unit-test our decoder against makvoid/Grvs44/nettrom equivalent fields on a shared synthetic packet; note tele_steer (s8 game axis, -127..127) is NOT the wheel angle — it is the post-mapping input the game applied, so expect it to differ from steer_deg under speed-sensitive steering limits.
 
+## DeepDrive GTAV baseline dataset — archive.org deepdrive-baseline-uint8 (600K frames, 42 h)  [PARTIAL]  (task 5)
+- URL: https://archive.org/details/deepdrive-baseline-uint8 (single file https://archive.org/download/deepdrive-baseline-uint8/gtav-42-hours-uint8.tar.gz); 2017 site also lists Dropbox `gtav-42-hours-uint8.tar.gz` and an 80 GB uint32 Google Drive variant — those two unverified
+- Maintainer: Craig Quiter (deepdrive.io, later Voyage/OpenAI-Universe ecosystem); archive.org upload by Matthew Kleinsmith (mwksmith@gmail.com)
+- Date (created / last updated): dataset dated 2016-11-14, uploaded to archive.org 2016-12-15 (verified via archive.org metadata API)
+- License: none stated on the item page or in metadata — unverified
+- Size (frames / hours / GB): 600K images / 42 hours of driving per the 2017 deepdrive.io page (Wayback 2017-01-11 capture read); tarball `gtav-42-hours-uint8.tar.gz` = 52,368,286,067 bytes (~52.4 GB), item_size verified via metadata API
+- Image resolution & camera view: "forward mounted camera" per 2017 site (hood-equivalent); resolution unverified — uint8 RGB frames, era suggests ~227x227-640x480
+- Label columns & units (degrees / normalized / gamepad axis): steering, throttle, yaw, and forward-speed control values produced by the in-game AI driver (NOT a human). Units unverified on the item; the companion universe-windows-envs vnc-gtav README defines the action space as continuous joystick axes -1..1 (steering x-axis, throttle z-axis)
+- Speed included: yes — "forward-speed" is one of the four recorded control values (units unverified)
+- Per-frame synced: yes — frame + control pairs recorded from the running game (sync method undocumented)
+- Download method: archive.org direct HTTP download or BitTorrent — item verified live today, metadata API returns workable servers
+- Known problems: labels come from the game's AI driver, not human wheel input — AI steering is quantized to GTA's input model; no license; dataset README was a Google Doc (link likely dead, unverified); camera is forward-mounted but not a masked bonnet cam; 2016-era GTA V build; tar-in-one-blob (no per-file random access)
+- Notes: This is THE canonical "GTA V steering dataset" — it predates DeepGTAV and is what most 2016-2018 GTA-V-driving work refers to. Different from the modern deepdrive.io dataset below.
+
+## deepdrive.io modern dataset (Unreal sim, NOT GTA V) — 100 GB / 8.2 h  [ADJACENT]  (task 5)
+- URL: https://docs.deepdrive.io/ and https://github.com/deepdrive/deepdrive ; data at s3://deepdrive/data/baseline_tfrecords (+ legacy s3://deepdrive/data/baseline HDF5)
+- Maintainer: deepdrive (Craig Quiter et al.)
+- Date (created / last updated): current-gen UE4 simulator era (~2019+); exact dates unverified
+- License: unverified
+- Size (frames / hours / GB): 100 GB, 8.2 hours, camera+depth+steering+throttle+brake of an oracle path-following agent plus DAgger corrective data
+- Image resolution & camera view: rotates between three cameras (normal, wide, semi-truck) with random intrinsic/extrinsic perturbations per episode — not a fixed bonnet cam
+- Label columns & units: steering/throttle/brake, normalized -1..1 action space per docs
+- Speed included: vehicle data available (depth + vehicle state) — per-frame speed column unverified
+- Per-frame synced: yes (recorded episodes)
+- Download method: `aws s3 sync s3://deepdrive/data/baseline_tfrecords .` — bucket LIST returned HTTP 403 to anonymous fetch today; download accessibility unverified
+- Known problems: NOT GTA V (own Unreal map/physics); AI-oracle + DAgger labels, not human; S3 access unverified.
+- Notes: Included to disambiguate the DeepDrive name — only the 2016 archive.org item above is actual GTA V.
+
+## Alzaib/Autonomous-Self-Driving-Car-GTA-5 — published 100k-frame hood-cam dataset (Google Drive)  [PARTIAL]  (task 5)
+- URL: https://github.com/Alzaib/Autonomous-Self-Driving-Car-GTA-5 ; data folder https://drive.google.com/drive/folders/1R787vkWaMe5nsWyLpbXTG55aUv4YteTo
+- Maintainer: Alzaib Nasiruddin
+- Date (created / last updated): npy files dated Jul 15-22, 2020 (verified in live Drive listing)
+- License: none for the data (repo LICENSE status unverified; README asserts none)
+- Size (frames / hours / GB): README claims 100,000 images collected (39,046 after balancing); Drive folder contains training_data-1.npy .. training_data-25.npy at ~100-132 MB each (~2.9 GB total) — consistent with 25 files x 4,000 samples = 100k raw (collect_data.py saves every 4,000 samples)
+- Image resolution & camera view: screen region (0,40,800,640) grabbed then resized to 160x120 GRAYSCALE (verified in collect_data.py); README requires "turn on hood camera" — hood cam confirmed
+- Label columns & units: `output = [axis_0, axis_3]` = [steering, throttle] read via pygame `joystick.get_axis()` → float -1.0..1.0 joystick-axis units (verified in collect_data.py). NOT wheel degrees. No brake channel.
+- Speed included: no
+- Per-frame synced: yes — frame grab and axis read happen in the same loop iteration at ~20 fps (clock.tick(20))
+- Download method: public Google Drive folder — anonymous file listing verified today (2026-10-03); per-file download links present
+- Known problems: grayscale + tiny 160x120 images (weak match to our 200x66 RGB pipeline); joystick-axis labels, not degrees; highway driving only; no speed; no license; Google Drive long-term availability not guaranteed; raw set is heavily unbalanced (only 39k usable after balancing).
+- Notes: The closest GTA V analog to our record format: continuous steering axis + throttle + per-frame image, hood cam, PilotNet trainer. Best downloadable GTA V set for steering regression found.
+
+## sartajbhuvaji "Self Driving in GTA V" (Kaggle copy of HF self-driving-GTA-V)  [PARTIAL]  (task 5)
+- URL: https://www.kaggle.com/datasets/sartajbhuvaji/self-driving-in-gta-v ; canonical original https://huggingface.co/datasets/sartajbhuvaji/self-driving-GTA-V
+- Maintainer: Sartaj Bhuvaji
+- Date (created / last updated): Kaggle v1 created 2023-12-25 (verified via Kaggle API); HF commits "over 2 years ago" per search index
+- License: MIT (Kaggle API licenseName verified)
+- Size (frames / hours / GB): Kaggle copy totalBytes 1,944,347,225 (~1.94 GB; file list not exposed anonymously — contents unverified). HF original claims ~1M frames / ~362 GB in ~200 files of ~1.81 GB each, plus a "mini" subset and per-file key-count CSVs (per dataset-card text in search index — unverified)
+- Image resolution & camera view: card says 800x600 windowed capture, stored images 480x270 RGB; "Camera: Hood Cam", Vehicle Camera Height Low, head-bobbing off (card text, unverified)
+- Label columns & units: one-of-9 one-hot keyboard classes {W,S,A,D,WA,WD,SA,SD,NK} — discrete classification labels, NOT steering angle or continuous axis; ~74% of frames are 'W' (counts verified via the published data-count figures)
+- Speed included: no
+- Per-frame synced: yes (sentdex-style npy frame+key pairs)
+- Download method: Kaggle public (57 downloads, isPrivate=false). HF original returned HTTP 401 to anonymous fetches today (page, API, tree, raw README all 401) — repo possibly made private/gated; status unverified
+- Known problems: keyboard-class labels cannot supervise steering regression; the public Kaggle copy (~1.9 GB) is a tiny fraction of the claimed 362 GB set; HF canonical copy currently inaccessible.
+- Notes: Largest GTA V frame+input dataset found anywhere, but the label modality is keys. A→D one-hot could at best seed a turn-left/turn-right classifier, not a wheel-angle regressor.
+
+## kfk42kfk GTA V sentdex-format datasets (Kaggle, 70k + 140k)  [PARTIAL]  (task 5)
+- URL: v1 https://www.kaggle.com/datasets/kfk42kfk/gta-v-self-driving-car ("70K"); v2 https://www.kaggle.com/datasets/kfk42kfk/gtav-new ("GTA-V 140k dataset")
+- Maintainer: Furkan K (kfk42kfk)
+- Date (created / last updated): v1 last updated 2021-06-04 (dataset version 3); v2 created 2022-04-09 (both verified via Kaggle API)
+- License: v1 "Unknown"; v2 "GPL 2" (per Kaggle API)
+- Size (frames / hours / GB): v1 ~13.4 GB (70k per subtitle); v2 ~7.03 GB, 140k images
+- Image resolution & camera view: sentdex pygta5 format — 800x600 windowed screen grabs expected; resolution/camera unverified
+- Label columns & units: sentdex one-hot WASD key classes (per "for Sentdex's self driving car series" description); continuous steering unlikely — unverified inside archives
+- Speed included: no
+- Per-frame synced: yes (frame+key npy pairs)
+- Download method: public Kaggle downloads (59 and 29 downloads respectively)
+- Known problems: keyboard labels, not wheel angle; license inconsistent between versions (Unknown vs GPL-2); camera view unverified.
+- Notes: These are community recreations — Sentdex himself never published his pygta5 training data; these two plus sartajbhuvaji's are the de-facto "sentdex-format" public sets.
+
+## dhruv-sirohi/GTAV-Imitation-Learning — 50k joystick-steer frames, data NOT published  [ADJACENT]  (task 5)
+- URL: https://github.com/dhruv-sirohi/GTAV-Imitation-Learning
+- Maintainer: dhruv-sirohi
+- Date (created / last updated): 72 commits; dates unverified
+- License: none stated (no LICENSE in root listing)
+- Size: NO DATA SHIPPED — repo contains only `data collection scripts/` and `training_scripts/`; README reports ~3.5 h recorded, ~50,000 balanced datapoints (frame + right-joystick x-axis continuous steer, merged npy)
+- Image resolution & camera view: screen-recorded frames (resolution unverified); camera view unverified
+- Label columns & units: continuous joystick x-axis (regression target), units per xinput read (likely -1..1 or 0..65535) — unverified
+- Speed included: no
+- Download method: n/a — dataset not released
+- Notes: Collection pipeline (screen_record.py + xinput.py + timestamp merge) is a decent reference for our own recorder design.
+
+## AutoAILab/End2EndDriving — 200k GTA V frames @30fps recorded, data NOT published  [ADJACENT]  (task 5)
+- URL: https://github.com/AutoAILab/End2EndDriving
+- Maintainer: AutoAILab
+- Date (created / last updated): ~2020 (TensorFlow 2.1 era); unverified
+- License: none stated
+- Size: NO DATA SHIPPED — README reports 200,000+ images recorded at 30 fps to .npy (800x600 windowed capture); no download link anywhere in README
+- Image resolution & camera view: 800x600 windowed, resized 100x100 HLS for training; camera view unverified
+- Label columns & units: left analogue stick (steering) + triggers (throttle) from a physical controller — continuous axes, units unverified
+- Speed included: no
+- Download method: n/a
+- Notes: VGG-16 regression variant of the same pattern; data collected but never released.
+
+## marsolmos/gtautodrive — 150k images collected, data NOT published  [ADJACENT]  (task 5)
+- URL: https://github.com/marsolmos/gtautodrive
+- Maintainer: marsolmos
+- Date (created / last updated): ~2020-2021 (TF 2.3 era); unverified
+- License: MIT (LICENSE file present)
+- Size: NO DATA SHIPPED — README reports 150,000 images + key labels collected, 11,235 after balancing; no download link
+- Label columns & units: keyboard keys (sentdex-style), not steering angle
+- Speed included: no
+- Download method: n/a
+- Notes: Code-only; README even lists "hood camera" as a future improvement (their data is presumably chase cam).
+
+## mrclgl/gta-v-driver — hood-cam + speed-input wheel mod project, data NOT published  [ADJACENT]  (task 5)
+- URL: https://github.com/mrclgl/gta-v-driver
+- Maintainer: mrclgl (a.k.a. Check2016)
+- Date (created / last updated): ~2017-2018 (TensorFlow 1.3/CUDA 8 era); unverified
+- License: none stated
+- Size: NO DATA SHIPPED — only a trained TF checkpoint is published (mediafire link)
+- Image resolution & camera view: 640x160 RGB crop; hood cam via manual-transmission mod's preconfigured "9" view — closest camera match to ours found in GTA V work
+- Label columns & units: steering wheel axis + throttle/brake fed through x360ce/vJoy to the game's wheel input (manual transmission mod "Wheel" mode); units unverified but effectively a continuous wheel axis, not degrees
+- Speed included: yes — current vehicle speed is a model input (read via the mod to a file), unique among the GTA V projects surveyed
+- Download method: n/a
+- Notes: Architecturally the closest GTA V analog to our project (image + speed -> wheel/throttle/brake, hood cam, wheel mod) — shame the training set was never released.
+
+## aitorzip/DeepGTAV (and David0tt/DeepGTAV-PreSIL forks) — collection framework, no steering dataset  [ADJACENT]  (task 5)
+- URL: https://github.com/aitorzip/DeepGTAV ; fork https://github.com/David0tt/DeepGTAV ; PreSIL https://github.com/bradenhurl/DeepGTAV-PreSIL
+- Maintainer: aitorzip (Aitor Ruano); David0tt / bradenhurl (U Waterloo forks)
+- Date (created / last updated): 1.2k stars, ~2017-era; forks maintained into 2021+
+- License: LICENSE file present in repo (type unverified)
+- Size: NO DATASET of driving-control data shipped by the framework itself; David0tt's fork links pregenerated datasets for UAV object detection (VisDrone-style: images + 2D boxes) at cloud.cs.uni-tuebingen.de — perception labels, not steering
+- Label columns & units: the FRAMEWORK can stream per-frame throttle, brake, steering (float, from game memory offsets), speed, yawRate, location, time via JSON at configurable Hz with a front-center vehicle camera — i.e. it can produce exactly our record format, but the user must record it
+- Speed included: supported field
+- Download method: git clone; requires GTAV <= 1.0.1180.2 + ScriptHookV
+- Known problems: a tool, not a dataset; memory offsets break across game versions; requires downgrading the game.
+- Notes: If we ever wanted a GTA V cross-domain pretraining set in our exact format, DeepGTAV+VPilot is the mature way to generate it. PreSIL (bradenhurl) ships LiDAR/KITTI-format perception data — wrong task.
+
+## Task 5 summary note
+GTA V frame+steering landscape: the only published datasets with CONTINUOUS steering labels are (a) the 2016 DeepDrive GTAV baseline on archive.org — 600K frames / 42 h / 52 GB, forward camera, steering+throttle+yaw+speed labels generated by the in-game AI (not human, units unverified, no license) — and (b) Alzaib's 100k-frame hood-cam set on a live public Google Drive — 160x120 grayscale + pygame joystick steer/throttle in -1..1 (verified from collect_data.py). Everything else with real downloads (sartajbhuvaji ~1M frames, kfk42kfk 70k/140k) uses sentdex one-hot WASD keyboard labels — unusable for steering regression. Projects that recorded proper continuous steer (dhruv-sirohi 50k, AutoAILab 200k, mrclgl wheel-mod+speed) never released their data. Perception GTAV sets (Playing for Data / GTAV segmentation ~25k frames, PreSIL) are not driving-control data and were not pursued. DeepGTAV remains the right tool if we ever want to generate a GTA V set in our exact schema.
+
