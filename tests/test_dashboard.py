@@ -39,6 +39,7 @@ def post(instance, event="manual", **overrides):
 def test_http_snapshot_page_history_and_sensitive_fields(dashboard):
     dashboard.publish(dict(timestamp_ns=1, mode="assist", actual_angle_deg=7, target_angle_deg=8,
                            observation_age_ms=float("nan"), secret="must not leak",
+                           route_active=True, human_interventions=3,
                            recording={"frames": 5, "dropped": 1, "access_token": "hidden"}))
     result = json.loads(read(dashboard).read())
     assert result["status"]["actual_angle_deg"] == 7
@@ -47,8 +48,12 @@ def test_http_snapshot_page_history_and_sensitive_fields(dashboard):
     assert result["status"]["observation_age_ms"] is None
     assert result["stale"] is False
     assert result["history"][0]["target_angle_deg"] == 8
+    assert result["status"]["route_active"] is True
+    assert result["status"]["human_interventions"] == 3
     html = read(dashboard, "/").read().decode()
     assert "Physical wheel" in html and "STALE" in html and "Observation age" in html
+    assert 'id="route"' in html and 'id="interventions"' in html
+    assert "Human takeovers from assistance" in html and "controls-note" in html
     assert "__TOKEN__" not in html
     with pytest.raises(HTTPError) as error:
         read(dashboard, "/../../etc/passwd")
