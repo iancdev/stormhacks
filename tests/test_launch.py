@@ -221,9 +221,9 @@ def test_model_profile_paths_are_single_argv_elements_without_shell(tmp_path, de
     assert value_after(plan, "--model") == str(path)
     calls = []
     monkeypatch.setenv("FORZA_LINK_KEY", "this-test-key-must-not-appear-in-output")
-    monkeypatch.setattr(launch.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0))
+    monkeypatch.setattr(launch.subprocess, "Popen", lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0, wait=lambda: 0))
     assert launch.launch(plan) == 0
-    assert calls == [(list(plan.argv), {"shell": False, "check": False})]
+    assert calls == [(list(plan.argv), {"shell": False})]
     assert calls[0][0][0] == launch.sys.executable
     assert "--test-target" not in plan.argv
     assert "this-test-key" not in (plan.run_dir / "launch.json").read_text()
@@ -244,7 +244,7 @@ def test_existing_run_and_session_cannot_be_overwritten(tmp_path, game):
 def test_checks_never_launch_create_files_or_expose_key(tmp_path, desktop, monkeypatch, capsys):
     secret = "exact-secret-that-never-appears"
     monkeypatch.setenv("FORZA_LINK_KEY", secret)
-    monkeypatch.setattr(launch.subprocess, "run", lambda *a, **kw: pytest.fail("check started a process"))
+    monkeypatch.setattr(launch.subprocess, "Popen", lambda *a, **kw: pytest.fail("check started a process"))
     path = save(tmp_path, desktop)
     assert launch.main(["--profile", str(path), "--check"]) == 0
     out = capsys.readouterr().out
@@ -306,7 +306,7 @@ def test_desktop_doctor_checks_cuda_without_hardware_or_network(monkeypatch, cap
     mock_packages(monkeypatch)
     monkeypatch.setenv("FORZA_LINK_KEY", "not-output")
     monkeypatch.setattr(launch, "_cuda_report", lambda: {"checked": True, "available": True, "devices": ["mock GPU"]})
-    monkeypatch.setattr(launch.subprocess, "run", lambda *a, **kw: pytest.fail("doctor started a process"))
+    monkeypatch.setattr(launch.subprocess, "Popen", lambda *a, **kw: pytest.fail("doctor started a process"))
     assert launch.main(["doctor", "--role", "desktop"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["training_ready"] and report["gpu_training_ready"] and report["ready"]

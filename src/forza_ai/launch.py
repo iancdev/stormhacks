@@ -24,6 +24,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import time
 import uuid
 
 
@@ -405,8 +406,25 @@ def _plan_report(plan):
             "note": "Configuration only. Run doctor separately; real hardware/network operation is unverified."}
 
 
-def launch(plan):
+def _wait_gracefully(process, timeout):
+    """Wait through repeated parent interrupts without resetting the deadline."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            returncode = process.poll()
+            if returncode is not None:
+                return returncode
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            return process.wait(timeout=remaining)
+        except KeyboardInterrupt:
+            continue
+
+
+def launch(plan, *, shutdown_grace_s=15.0):
     """Run with the same Python and inherited environment/stdin, never a shell."""
+    _number(shutdown_grace_s, "shutdown_grace_s", positive=True)
     report = _plan_report(plan)
     if not report["ready"]:
         raise ProfileError("launch requires Python 3.10+, FORZA_LINK_KEY, and Windows for the game role; run --check")
@@ -414,11 +432,47 @@ def launch(plan):
     plan.run_dir.parent.mkdir(parents=True, exist_ok=True)
     plan.run_dir.mkdir(exist_ok=False)
     (plan.run_dir / "launch.json").write_text(_safe_json(report) + "\n", encoding="utf-8")
-    # Keep console input/output attached so manual/arm/quit and Ctrl+C retain their
-    # normal behavior. Runtime diagnostic files live in this unique run directory.
-    result = subprocess.run(list(plan.argv), shell=False, check=False)
-    (plan.run_dir / "exit.json").write_text(json.dumps({"returncode": result.returncode}) + "\n", encoding="utf-8")
-    return result.returncode
+    # Inherit the console/process group: its Ctrl+C reaches the runtime too.
+    # subprocess.run kills its child on KeyboardInterrupt, which can cut off
+    # recorder drain. Own the process and allow bounded normal cleanup instead.
+    process = None
+    interrupted, forced = False, False
+    failure = None
+    try:
+        process = subprocess.Popen(list(plan.argv), shell=False)
+        try:
+            return process.wait()
+        except KeyboardInterrupt:
+            interrupted = True
+            try:
+                print("Stopping: waiting for runtime cleanup (Ctrl+C already sent to its console).", flush=True)
+            except (KeyboardInterrupt, OSError):
+                pass  # Diagnostic output must not abort the cleanup grace period.
+            try:
+                return _wait_gracefully(process, shutdown_grace_s)
+            except subprocess.TimeoutExpired:
+                forced = True
+                process.terminate()
+                try:
+                    return _wait_gracefully(process, 1.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    return _wait_gracefully(process, 5.0)
+    except BaseException as error:
+        failure = type(error).__name__
+        if process is not None and process.poll() is None:
+            forced = True
+            process.kill()
+            try:
+                _wait_gracefully(process, 5.0)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        raise
+    finally:
+        outcome = {"returncode": process.returncode if process is not None else None,
+                   "interrupted": interrupted, "forced_termination": forced,
+                   "error_type": failure}
+        (plan.run_dir / "exit.json").write_text(json.dumps(outcome) + "\n", encoding="utf-8")
 
 
 def main(argv=None):

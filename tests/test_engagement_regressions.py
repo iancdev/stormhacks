@@ -80,7 +80,11 @@ def install_clock_and_policy(monkeypatch, adapter, command_state=lambda tick: "f
             generated = clock.now_ns - (300_000_000 if state == "stale" else 0)
             return SteeringCommand(10, generated, generated, generated + 150_000_000)
 
+        def failure_state(self):
+            return 0, None
+
     monkeypatch.setattr("forza_ai.runtime.time", clock)
+    monkeypatch.setattr("forza_ai.simulation.time", clock)
     monkeypatch.setattr("forza_ai.runtime.PolicyWorker", Worker)
 
 

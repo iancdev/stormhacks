@@ -69,3 +69,7 @@ class ModelObservation:
 
 class ObservationUnavailable(RuntimeError):
     """Expected temporary missing/stale/paused input; inhibit assistance."""
+
+
+class ActuationExpired(RuntimeError):
+    """Native preparation outlived the command's absolute actuation deadline."""

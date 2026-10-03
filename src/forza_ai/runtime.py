@@ -18,100 +18,11 @@ import sys
 import threading
 import time
 
-from forza_ai.contracts import ControlMode, ModelObservation, ObservationUnavailable, SteeringCommand
+from forza_ai.contracts import ActuationExpired, ControlMode, ModelObservation
 from forza_ai.control import SteeringConfig, SteeringController
 from forza_ai.policies.placeholder import FixedAnglePolicy, SweepPolicy, TestObservation
 from forza_ai.simulation import SimulatedAdapter
-
-
-class PolicyWorker:
-    """Latest-observation/latest-command exchange, no queue of old predictions.
-
-    CPU model inference can replace predict(), but must provide the original
-    image timestamp in its observation. Generating a command never refreshes
-    the observation timestamp. Invalidated input also discards any in-flight
-    prediction, so a slow model cannot republish a pre-takeover/pause command.
-    """
-
-    def __init__(self, policy, hz=30.0, command_ttl_ns=150_000_000):
-        if not math.isfinite(hz) or hz <= 0 or command_ttl_ns <= 0:
-            raise ValueError("policy frequency and TTL must be positive")
-        self.policy = policy
-        self.period = 1.0 / hz
-        self.command_ttl_ns = command_ttl_ns
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._observation = None
-        self._command = None
-        self._error = None
-        self._generation = 0
-        self._unavailable_reason = None
-        self._thread = threading.Thread(target=self._run, name="steering-policy", daemon=True)
-
-    def start(self):
-        self._thread.start()
-
-    def publish(self, observation):
-        with self._lock:
-            self._observation = observation
-
-    def invalidate(self, reason="input_unavailable"):
-        with self._lock:
-            self._generation += 1
-            self._observation = None
-            self._command = None
-            self._unavailable_reason = reason
-
-    @property
-    def unavailable_reason(self):
-        with self._lock:
-            return self._unavailable_reason
-
-    def latest(self):
-        with self._lock:
-            if self._error is not None:
-                raise RuntimeError("policy failed") from self._error
-            return self._command
-
-    def _run(self):
-        while not self._stop.is_set():
-            started = time.monotonic()
-            with self._lock:
-                observation = self._observation
-                generation = self._generation
-            if observation is not None:
-                try:
-                    prediction_started_ns = time.monotonic_ns()
-                    target = float(self.policy.predict(observation))
-                    if not math.isfinite(target):
-                        raise ValueError("policy returned a non-finite target")
-                    generated = time.monotonic_ns()
-                    command = SteeringCommand(target, generated, observation.timestamp_ns,
-                                               generated + self.command_ttl_ns,
-                                               (generated - prediction_started_ns) / 1e6)
-                    with self._lock:
-                        if generation == self._generation:
-                            self._command = command
-                            self._unavailable_reason = None
-                except ObservationUnavailable as error:
-                    with self._lock:
-                        if generation == self._generation:
-                            self._command = None
-                            self._unavailable_reason = str(error)
-                except Exception as error:
-                    with self._lock:
-                        self._error = error
-                    return
-            self._stop.wait(max(0.0, self.period - (time.monotonic() - started)))
-
-    def close(self):
-        self._stop.set()
-        close_policy = getattr(self.policy, "close", None)
-        if close_policy is not None:
-            close_policy()  # e.g. interrupt a pending network response
-        if self._thread.ident is not None:
-            self._thread.join(timeout=0.5)
-        # A hung model cannot block hardware cleanup; the daemon has no motor access.
+from forza_ai.policy_worker import PolicyWorker
 
 
 def _read_console(events, stop):
@@ -201,6 +112,17 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             progress_worker.start()
         worker = PolicyWorker(policy, hz=policy_hz)
         worker.start()
+        handled_failure = 0
+
+        def consume_policy_failure():
+            nonlocal handled_failure
+            generation, reason = worker.failure_state()
+            if generation > handled_failure:
+                handled_failure = generation
+                worker.invalidate("inference_failure")
+                return True
+            return False
+
         period = 1.0 / control_hz
         started = time.monotonic()
         deadline = started
@@ -251,6 +173,13 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             else:
                 worker.publish(TestObservation(wheel, vehicle))
             command = worker.latest()
+            policy_failed = consume_policy_failure()
+            if policy_failed:
+                command = None
+                pending_arm = False
+                human_control = False
+                input_error = "inference_failure"
+                controller.disengage("inference_failure")
             buttons = set(wheel.buttons)
             # A held startup/arm button is never an engagement edge.
             rising = set() if previous_buttons is None else buttons - previous_buttons
@@ -278,7 +207,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                     takeover = True
                     explicit_takeover = True
                 elif event == "arm":
-                    if not shadow and not engaged_at_tick_start:
+                    if not shadow and not engaged_at_tick_start and not policy_failed:
                         pending_arm = True
                         active_arm_until = time.monotonic() + arm_timeout
                         metrics.event("arm", time.monotonic_ns())
@@ -318,6 +247,12 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                     worker.invalidate(live_error)
                     command = None
                     input_error = live_error
+            if consume_policy_failure():
+                pending_arm = False
+                human_control = False
+                command = None
+                live_error = "inference_failure"
+                input_error = live_error
             # All producer/OS reads precede this clock: never validate a timestamp
             # and then perform a potentially slow external read before the motor.
             after_io = time.monotonic_ns()
@@ -331,7 +266,26 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if output_error:
                 controller.disengage(output_error, fault=wheel_error is not None)
                 status = replace(status, mode=controller.mode, reason=output_error, torque=0.0)
-            adapter.set_torque(status.torque)
+            try:
+                if status.torque:
+                    # Absolute host validity reaches the last native boundary;
+                    # successful SDL preparation may still have consumed the budget.
+                    actuation_deadline = min(wheel.timestamp_ns + controller.config.max_wheel_age_ns,
+                                             command.valid_until_ns,
+                                             command.generated_time_ns + controller.config.max_command_age_ns,
+                                             command.observation_time_ns + controller.config.max_observation_age_ns)
+                    adapter.set_torque_before(status.torque, actuation_deadline)
+                else:
+                    adapter.set_torque(0.0)
+            except ActuationExpired:
+                adapter.set_torque(0.0)
+                worker.invalidate("actuation_deadline_expired")
+                pending_arm = False
+                human_control = False
+                command = None
+                controller.disengage("actuation_deadline_expired", fault=True)
+                status = replace(status, mode=controller.mode, reason=controller.reason, torque=0.0)
+                input_error = controller.reason
             if explicit_takeover:
                 # The handover interval starts after zero torque was sent, and
                 # labels must be sampled after that boundary, not merely written later.
