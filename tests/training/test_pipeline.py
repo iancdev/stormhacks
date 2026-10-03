@@ -188,3 +188,36 @@ def test_export_parity_and_validation_integrity(data, tmp_path):
     edit_csv(held_out / 'wheel.csv', lambda rows: rows[0].update(angle_deg='1'))
     with pytest.raises(ValueError, match='validation data changed'):
         evaluate(output / 'last.pt', data)
+
+
+@pytest.mark.parametrize('frame_ms,pause_ms,accepted', [
+    (30, 10, False),  # Pause before capture, inside interpolation's left support.
+    (10, 20, False),  # Pause after capture, inside interpolation's right support.
+    (40, 10, True),   # Exact wheel label needs no earlier interpolation support.
+    (0, 20, True),    # Exact wheel label needs no future interpolation support.
+])
+def test_pause_across_interpolation_support(tmp_path, frame_ms, pause_ms, accepted):
+    path = tmp_path / 'session'
+    (path / 'images').mkdir(parents=True)
+    (path / 'metadata.json').write_text(json.dumps({
+        'schema_version': 1, 'session_id': 'pause', 'clock': 'monotonic_ns',
+        'wheel_rotation_deg': 900, 'image_stage': 'road_crop', 'completed': True,
+    }))
+    Image.new('RGB', (200, 66)).save(path / 'images/frame.png')
+    (path / 'frames.csv').write_text(f'frame_id,image_path,capture_time_ns\n0,images/frame.png,{frame_ms * 1_000_000}\n')
+    (path / 'wheel.csv').write_text('timestamp_ns,angle_deg,throttle,brake,control_mode\n0,0,0,0,manual\n40000000,90,0,0,manual\n')
+    (path / 'telemetry.csv').write_text(
+        f'timestamp_ns,speed_mps,is_race_on\n0,10,1\n{pause_ms * 1_000_000},20,0\n{(pause_ms + 5) * 1_000_000},30,1\n')
+    result = load_session(path)
+    assert bool(result.samples) == accepted
+    if not accepted:
+        assert result.rejected == {'race_off': 1}
+
+
+def test_stale_telemetry_at_future_interpolation_support(tmp_path):
+    data = generate(tmp_path / 'data', sessions=2, frames=4)
+    path = data / 'synthetic-000'
+    edit_csv(path / 'frames.csv', lambda rows: (rows.__delitem__(slice(1, None)), rows[0].update(capture_time_ns='1010000000')))
+    edit_csv(path / 'telemetry.csv', lambda rows: rows.__delitem__(slice(1, None)))
+    result = load_session(path, Alignment(max_telemetry_age_ns=20_000_000))
+    assert result.rejected == {'stale_telemetry': 1}

@@ -43,7 +43,9 @@ Wheel angle is exact or linearly interpolated at capture plus the configured
 label offset. Every wheel sample spanning source capture and target must be in
 the same expert mode (`manual` or `takeover`) with bounded gaps. Mode boundaries,
 AI `assist` frames, missing coverage, stale telemetry, and race-off intervals are
-excluded. Positive and negative offsets are supported; choose them based on
+excluded. Race state and telemetry freshness are checked over the full wheel
+interpolation support bracket as well as the source-to-target interval; speed
+input is still sampled causally at capture. Positive and negative offsets are supported; choose them based on
 measured recording latency, not an assumed reaction time. A nonzero offset may
 exclude frames at a session's edges.
 

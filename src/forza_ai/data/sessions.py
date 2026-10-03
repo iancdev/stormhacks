@@ -135,13 +135,18 @@ def load_session(path: Path, alignment: Alignment = Alignment()) -> Session:
                for a, b in zip(segment, segment[1:])):
             rejected['wheel_gap'] += 1
             continue
-        ti = bisect_right(tt, start) - 1
-        tj = bisect_right(tt, end) - 1
-        if ti < 0 or end - tt[tj] > alignment.max_telemetry_age_ns:
+        # Interpolation relies on BOTH supporting wheel rows, even when an
+        # endpoint lies outside the capture-to-target interval. Race state and
+        # freshness must hold over that full support, while input speed remains
+        # causal at captured below. Exact labels add no extra support interval.
+        support_start, support_end = wt[wi], wt[wj]
+        ti = bisect_right(tt, support_start) - 1
+        tj = bisect_right(tt, support_end) - 1
+        if ti < 0 or support_end - tt[tj] > alignment.max_telemetry_age_ns:
             rejected['stale_telemetry'] += 1
             continue
         segment_t = telemetry[ti:tj + 1]
-        if start - tt[ti] > alignment.max_telemetry_age_ns or any(
+        if support_start - tt[ti] > alignment.max_telemetry_age_ns or any(
             b['timestamp_ns'] - a['timestamp_ns'] > alignment.max_telemetry_age_ns
             for a, b in zip(segment_t, segment_t[1:])
         ):
