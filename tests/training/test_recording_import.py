@@ -80,7 +80,7 @@ def test_invalid_or_incomplete_recording_fails_transactionally(tmp_path, case):
     elif case == 'extra':
         (source / 'frames/extra.jpg').write_bytes(b'extra')
     elif case == 'segments':
-        edit_meta(source, lambda m: m.update(segments=3))
+        edit_meta(source, lambda m: m.update(segments=4))
     elif case == 'no-meta':
         (source / 'meta.json').unlink()
     elif case == 'image-size':
@@ -219,7 +219,7 @@ def test_empty_segments_require_dropped_frame_evidence(tmp_path, case, empty_seg
         edit_rows(source, lambda rows: [r.update(segment=str(int(r['segment']) + 1)) for r in rows])
     elif case == 'middle':
         edit_rows(source, lambda rows: [r.update(segment='2') for r in rows if r['segment'] == '1'])
-    edit_meta(source, lambda m: m.update(segments=2 + empty_segments, dropped=empty_segments))
+    edit_meta(source, lambda m: m.update(segments=2 + empty_segments, dropped=empty_segments, completed=True))
     report = import_recording(source, tmp_path / 'valid', expert_mode='manual')
     assert report['accepted'] == 8
     assert report['provenance']['segments'] == 2 + empty_segments
@@ -227,3 +227,66 @@ def test_empty_segments_require_dropped_frame_evidence(tmp_path, case, empty_seg
     with pytest.raises(ValueError, match='empty segments exceed'):
         import_recording(source, tmp_path / 'invalid', expert_mode='manual')
     assert not (tmp_path / 'invalid').exists()
+
+
+def test_original_ctrl_c_can_leave_one_trailing_unqueued_segment(tmp_path):
+    source = recording(tmp_path / 'source')
+    edit_meta(source, lambda m: m.update(segments=3, dropped=0))
+    report = import_recording(source, tmp_path / 'accepted', expert_mode='manual')
+    assert report['accepted'] == 8
+    assert 'KeyboardInterrupt' in report['provenance']['empty_segment_evidence']
+    # The rule is tied to the tracked original metadata shape, not later variants.
+    edit_meta(source, lambda m: m.update(discarded_at_stop=5))
+    with pytest.raises(ValueError, match='empty segments exceed'):
+        import_recording(source, tmp_path / 'unverified-variant', expert_mode='manual')
+
+
+@pytest.mark.parametrize('case', ['two-trailing', 'leading', 'middle', 'modern'])
+def test_interrupt_compatibility_does_not_explain_other_empty_segments(tmp_path, case):
+    source = recording(tmp_path / 'source')
+    edit_meta(source, lambda m: m.update(segments=3, dropped=0))
+    if case == 'two-trailing':
+        edit_meta(source, lambda m: m.update(segments=4))
+    elif case == 'leading':
+        edit_rows(source, lambda rows: [r.update(segment=str(int(r['segment']) + 1)) for r in rows])
+    elif case == 'middle':
+        edit_rows(source, lambda rows: [r.update(segment='2') for r in rows if r['segment'] == '1'])
+    else:
+        edit_meta(source, lambda m: m.update(completed=True))
+    with pytest.raises(ValueError, match='empty segments exceed'):
+        import_recording(source, tmp_path / 'invalid', expert_mode='manual')
+
+
+def test_diagnostic_extended_variant_keeps_failures_and_original_bytes(tmp_path):
+    import hashlib
+    from forza_ai.data.recording import inspect_recording_for_diagnostics
+    source = recording(tmp_path / 'source')
+    edit_meta(source, lambda m: m.update(segments=3, dropped=0, discarded_at_stop=5))
+    labels = source / 'labels.csv'
+    rows = list(csv.DictReader(labels.open()))
+    extras = ['race_time', 'distance', 'yaw_rate', 'game_ms', 'gear']
+    with labels.open('w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=COLUMNS + extras)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(dict(row, race_time='1.0', distance='-37.4', yaw_rate='0.0', game_ms='100', gear='1'))
+    before = {p.relative_to(source).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+              for p in source.rglob('*') if p.is_file()}
+    with pytest.raises(ValueError, match='columns'):
+        import_recording(source, tmp_path / 'strict', expert_mode='manual')
+    session = inspect_recording_for_diagnostics(source, expert_mode='manual')
+    assert len(session.samples) == 8
+    assert session.provenance['diagnostic_only'] is True
+    assert session.provenance['production_validation_passed'] is False
+    assert len(session.provenance['strict_validation_issues']) == 2
+    assert session.provenance['empty_segment_evidence'] == 'unresolved'
+    assert not (source / 'metadata.json').exists()
+    after = {p.relative_to(source).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in source.rglob('*') if p.is_file()}
+    assert before == after
+    with pytest.raises(ValueError, match='diagnostic-only'):
+        split_sessions([session, session], .25, 7)
+    # Diagnostic scope does not bypass missing files or malformed base data.
+    (source / 'frames/000003.jpg').unlink()
+    with pytest.raises(ValueError, match='missing or extra'):
+        inspect_recording_for_diagnostics(source, expert_mode='manual')
