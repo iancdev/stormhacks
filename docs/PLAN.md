@@ -8,7 +8,7 @@ Train a vision policy offline from human driving recordings, then continuously s
 
 ## Priorities and ownership
 
-1. **Training pipeline first:** chat `01a103b0-2b07-7c73-8934-0324136bc8f6` owns dataset validation/loading, training, evaluation, export, a portable inference wrapper, and Colab. It works in its own worktree and branch. It also owns project packaging and training dependencies.
+1. **Training pipeline first:** chat `01a103b0-2b07-7c73-8934-0324136bc8f6` owns dataset validation/loading, training, evaluation, export, a portable inference wrapper, and the Colab fallback. It works in its own worktree and branch. Training setup now targets `DESKTOP-0HR4O88` first.
 2. **Adapter in parallel:** the originating chat owns hardware I/O, continuous steering control, telemetry, a placeholder policy, and runtime contracts. Windows-only packages must not be required to run training.
 3. **Data collection:** the user will provide real driving data later. The verified hardware reference is `utils/test.py`. The user reports a successful short recording, but its recorder and session files are not in this repository yet. Preserve that result and integrate its format when available; do not assume the diagnostic script is a recorder.
 
@@ -38,7 +38,7 @@ First acceptance milestone: synthetic data validates, trains, and reloads a chec
 
 ## Data and deployment
 
-The wheel PC records frames, wheel inputs, telemetry, and control mode into completed sessions. The user confirmed on 2026-10-03 that the wheel is on a different PC from Codex's connected `DESKTOP-0HR4O88`, and selected that connected desktop as the primary GPU training host. Colab remains a fallback. GitHub stores code and tiny synthetic fixtures; session archives and checkpoints are transferred separately. GPU training consumes completed archives, validates them, and writes resumable checkpoints. Live inference initially runs on the wheel PC CPU, separate from the faster physical control loop. Desktop GPU/PyTorch availability is not yet verified.
+The wheel PC records frames, wheel inputs, telemetry, and control mode into completed sessions. The user confirmed on 2026-10-03 that the wheel is on a different PC from Codex's connected `DESKTOP-0HR4O88`, and selected that connected desktop for **both GPU training and live inference**. Colab remains a training fallback. GitHub stores code and tiny synthetic fixtures; session archives and checkpoints are transferred separately. GPU training consumes completed archives, validates them, and writes resumable checkpoints. The game PC sends road crops and causally matched speed over LAN; the desktop returns physical target angles. The fast physical controller, pedals, takeover, and stale-command shutdown remain on the wheel PC. No cross-machine clock comparison is used. Desktop GPU/PyTorch availability and real two-PC operation are not yet verified. See [TWO_PC_SETUP.md](TWO_PC_SETUP.md).
 
 ## Integration and verification
 
@@ -62,4 +62,4 @@ The wheel PC records frames, wheel inputs, telemetry, and control mode into comp
 1. Obtain the existing recorder/sample schema and adapt it to version 1. Sessions require `completed: true` once fully written/transferred; preserve source timestamps and separate human corrections from AI motion.
 2. Set up the portable training CLI on `DESKTOP-0HR4O88`, verify CUDA availability, then transfer completed real sessions for training. Colab notebook is a fallback. No real training is scheduled or started automatically.
 3. User runs the Windows acceptance procedure for passthrough, +/-5-degree stationary tracking, takeover, expiry, and cleanup. Tune PD gains only against observed hardware behavior.
-4. Connect real capture plus `SteeringPredictor` to the runtime in shadow mode, preserving the frame's capture time through inference. Road-force replay remains a later independent increment.
+4. Live capture, telemetry matching, local model wrapper, and a LAN inference client/server are being integrated. Verify the fixed-target network path first, then load the real exported policy in desktop shadow mode with source capture times preserved. Road-force replay remains a later independent increment.

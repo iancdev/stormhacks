@@ -104,6 +104,9 @@ class PolicyWorker:
 
     def close(self):
         self._stop.set()
+        close_policy = getattr(self.policy, "close", None)
+        if close_policy is not None:
+            close_policy()  # e.g. interrupt a pending network response
         if self._thread.ident is not None:
             self._thread.join(timeout=0.5)
         # A hung model cannot block hardware cleanup; the daemon has no motor access.
@@ -120,7 +123,7 @@ def _read_console(events, stop):
 def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         assist=False, takeover_button=None, interactive=False, receiver=None,
         config=None, status_path=None, command_queue=None, camera=None, shadow=False,
-        progress=False, arm_timeout=5.0):
+        progress=False, arm_timeout=5.0, foreground_guard=None):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     Zero duration runs until interrupted. Status output is optional and buffered
@@ -187,7 +190,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if model_mode:
                 frame = camera.latest()
                 causal_vehicle = receiver.at_or_before(frame.timestamp_ns) if frame is not None else None
-                if vehicle is None:
+                if foreground_guard is not None and not foreground_guard.is_active():
+                    input_error = "game_not_foreground"
+                elif vehicle is None:
                     input_error = "telemetry_unavailable"
                 elif not vehicle.is_race_on:
                     input_error = "race_inactive"
@@ -234,6 +239,19 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             status = controller.step(wheel, command, now_ns, engage=engage_now, takeover=takeover)
             # Always forward the measured inputs, never the model's target angle.
             adapter.write_virtual_state(wheel)
+            live_error = None
+            if model_mode and status.mode == ControlMode.ASSIST:
+                current_vehicle = receiver.latest()
+                if current_vehicle is None or not current_vehicle.is_race_on:
+                    live_error = "telemetry_unavailable_or_paused"
+                elif foreground_guard is not None and not foreground_guard.is_active():
+                    live_error = "game_not_foreground"
+                if live_error:
+                    worker.invalidate(live_error)
+                    command = None
+                    input_error = live_error
+            # All producer/OS reads precede this clock: never validate a timestamp
+            # and then perform a potentially slow external read before the motor.
             after_io = time.monotonic_ns()
             if after_io - now_ns > controller.config.max_wheel_age_ns:
                 raise RuntimeError("hardware_output_stalled")
@@ -241,11 +259,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             # twice. A sample can age out even when this write was individually fast.
             wheel_error = controller.wheel_error(wheel, after_io)
             command_error = controller.command_error(command, after_io)
-            output_error = wheel_error or (command_error if status.mode == ControlMode.ASSIST else None)
-            if model_mode and status.mode == ControlMode.ASSIST:
-                current_vehicle = receiver.latest()
-                if current_vehicle is None or not current_vehicle.is_race_on:
-                    output_error = output_error or "telemetry_unavailable_or_paused"
+            output_error = wheel_error or live_error or (command_error if status.mode == ControlMode.ASSIST else None)
             if output_error:
                 controller.disengage(output_error, fault=wheel_error is not None)
                 status = replace(status, mode=controller.mode, reason=output_error, torque=0.0)
@@ -281,34 +295,30 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         # Release motor before joining threads or writing files. Preserve cleanup
         # order even if a driver throws; adapter.close() retries its own releases.
         stop_console.set()
-        try:
-            adapter.set_torque(0.0)
-        finally:
+        cleanup = [("zero_motor", lambda: adapter.set_torque(0.0)), ("adapter", adapter.close)]
+        for name, resource in (("policy", worker), ("capture", camera),
+                               ("telemetry", receiver), ("progress", progress_worker)):
+            if resource is not None:
+                cleanup.append((name, resource.close))
+        cleanup_errors = []
+        for name, operation in cleanup:
             try:
-                adapter.close()
-            finally:
-                try:
-                    if worker is not None:
-                        worker.close()
-                finally:
-                    try:
-                        if camera is not None:
-                            camera.close()
-                    finally:
-                        try:
-                            if receiver is not None:
-                                receiver.close()
-                        finally:
-                            try:
-                                if progress_worker is not None:
-                                    progress_worker.close()
-                            finally:
-                                if status_path is not None:
-                                    _save_status(status_path, rows, summary, error_text)
+                operation()
+            except BaseException as error:
+                cleanup_errors.append(f"{name}: {type(error).__name__}: {error}")
+        report_error = error_text or ("Cleanup failed: " + "; ".join(cleanup_errors) if cleanup_errors else None)
+        if status_path is not None:
+            try:
+                _save_status(status_path, rows, summary, report_error, cleanup_errors)
+            except Exception:
+                if error_text is None and not cleanup_errors:
+                    raise
+        if cleanup_errors and error_text is None:
+            raise RuntimeError(report_error)
     return summary
 
 
-def _save_status(status_path, rows, summary, error_text):
+def _save_status(status_path, rows, summary, error_text, cleanup_errors=()):
     """Preserve diagnostic evidence even when a run fails; hardware is closed."""
     path = Path(status_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -317,7 +327,7 @@ def _save_status(status_path, rows, summary, error_text):
             writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
             writer.writeheader()
             writer.writerows(rows)
-    report = dict(summary, error=error_text, hardware_verified=False)
+    report = dict(summary, error=error_text, cleanup_errors=list(cleanup_errors), hardware_verified=False)
     path.with_suffix(".json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
@@ -330,6 +340,9 @@ def main(argv=None):
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--model", type=Path, help="export directory containing model.pt and metadata.json")
     selection.add_argument("--sweep", action="store_true", help="stationary 0/right/0/left/0 angle sequence")
+    selection.add_argument("--inference-host", help="desktop LAN address for remote image-plus-speed inference")
+    parser.add_argument("--inference-port", type=int, default=8765)
+    parser.add_argument("--network-timeout", type=float, default=0.2, help="total request deadline in seconds")
     parser.add_argument("--target-angle", type=float, default=None, help="fixed target, or positive sweep amplitude; default 5")
     parser.add_argument("--sweep-hold", type=float, default=2.0, help="seconds per stationary sweep target")
     parser.add_argument("--duration", type=float, help="seconds; 0 until stopped; default 5, sweep 12, model 0")
@@ -350,10 +363,12 @@ def main(argv=None):
                         help="absolute road crop matching the training recorder; required with --model")
     parser.add_argument("--display", type=int, default=0, help="DXcam output index")
     parser.add_argument("--capture-hz", type=float, default=30.0)
+    parser.add_argument("--game-process", default="ForzaHorizon4.exe", help="foreground EXE required for live input")
     parser.add_argument("--status-csv", type=Path)
     parser.add_argument("--quiet", action="store_true", help="suppress twice-per-second progress")
     args = parser.parse_args(argv)
-    duration = args.duration if args.duration is not None else (0 if args.model else 12 if args.sweep else 5)
+    live_mode = bool(args.model or args.inference_host)
+    duration = args.duration if args.duration is not None else (0 if live_mode else 12 if args.sweep else 5)
     if args.status_csv is not None and (duration == 0 or duration * args.control_hz > 100_000):
         parser.error("--status-csv requires a finite --duration of at most 100,000 control ticks")
     config = SteeringConfig(torque_limit=args.torque_limit, kp=args.kp, kd=args.kd,
@@ -368,14 +383,21 @@ def main(argv=None):
             parser.error("each physical button can be mapped only once")
         mapping[physical] = virtual
     camera = None
-    if args.model:
+    foreground_guard = None
+    if live_mode:
         if args.crop is None or args.backend != "windows":
             parser.error("live model requires --backend windows and --crop LEFT TOP RIGHT BOTTOM")
         if args.target_angle is not None:
             parser.error("--target-angle cannot be combined with a driving model")
         from forza_ai.capture import DXCamCapture
-        from forza_ai.policies.live import LiveModelPolicy
-        policy = LiveModelPolicy(args.model)
+        from forza_ai.foreground import ForegroundGameGuard
+        foreground_guard = ForegroundGameGuard(args.game_process)
+        if args.inference_host:
+            from forza_ai.network import RemotePolicy
+            policy = RemotePolicy(args.inference_host, port=args.inference_port, timeout_s=args.network_timeout)
+        else:
+            from forza_ai.policies.live import LiveModelPolicy
+            policy = LiveModelPolicy(args.model)
         camera = DXCamCapture(region=tuple(args.crop), fps=args.capture_hz, output_idx=args.display)
     else:
         target = 5.0 if args.target_angle is None else args.target_angle
@@ -391,7 +413,7 @@ def main(argv=None):
         adapter = SimulatedAdapter(torque_limit=args.torque_limit)
     receiver = None
     try:
-        if args.telemetry or args.model:
+        if args.telemetry or live_mode:
             from forza_ai.telemetry import TelemetryReceiver
             receiver = TelemetryReceiver(port=args.telemetry_port)
     except BaseException:
@@ -403,7 +425,7 @@ def main(argv=None):
                      policy_hz=args.policy_hz, assist=args.assist,
                      takeover_button=args.takeover_button, interactive=args.interactive,
                      receiver=receiver, config=config, status_path=args.status_csv,
-                     camera=camera, shadow=args.shadow, progress=not args.quiet)
+                     camera=camera, shadow=args.shadow, progress=not args.quiet, foreground_guard=foreground_guard)
     except KeyboardInterrupt:
         print("Stopped; hardware cleanup requested.")
         return 0

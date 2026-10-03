@@ -14,8 +14,10 @@ A driving AI for Forza Horizon 4 that learns from human demonstrations and physi
 ## Architecture
 
 ```text
-Forza image + speed → CNN → target wheel angle → torque controller → TMX motor
-Forza ← vJoy ← measured TMX angle + human pedal inputs
+Game/wheel PC: road crop + speed → LAN → Desktop: CNN inference
+Game/wheel PC: physical controller ← LAN ← Desktop: target angle
+Physical controller → TMX motor → measured angle → vJoy → Forza
+Human pedals → vJoy → Forza
 ```
 
 The physical wheel remains in the steering loop. Direct model-to-vJoy steering can serve as a separate software baseline.
@@ -33,7 +35,7 @@ Windows gaming PC, Forza Horizon 4, Thrustmaster TMX and pedals, Python, PySDL2,
 5. Test closed-loop driving, collect marked human corrections, and retrain.
 6. Prepare a demo showing completion rate, interventions per minute, and steering stability.
 
-Overtaking, navigation, reinforcement learning, and network-separated inference are future extensions.
+Overtaking, navigation, and reinforcement learning are future extensions.
 
 ## Status
 
@@ -44,6 +46,7 @@ The tested hardware diagnostic is in `utils/test.py`. The offline training pipel
 - [Adapter usage and Windows acceptance](docs/ADAPTER.md)
 - [Training, dataset transfer, and inference](docs/TRAINING.md)
 - [Colab notebook](notebooks/train_colab.ipynb)
+- [Primary two-PC setup: desktop training/inference and game/wheel control](docs/TWO_PC_SETUP.md)
 
 ## Start training development
 
