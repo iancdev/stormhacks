@@ -15,6 +15,8 @@ Options:
     record --no-telemetry               # record even without Forza Data Out (no speed, no pause)
     record --rewind-button N            # pressing TMX button N (your Forza rewind) drops the last
                                         # --drop-seconds (default 5) of frames + the rewind itself
+    (rewinds are also detected automatically when Forza's race clock jumps backwards;
+     --no-auto-rewind turns that off)
 
 Crop/mask settings live in config/capture.json. Recordings go to data/recordings/<timestamp>/:
 frames/000000.jpg ..., labels.csv (one row per frame) and meta.json.
@@ -294,13 +296,17 @@ class TelemetryReader(threading.Thread):
 
     def __init__(self, port):
         super().__init__(daemon=True)
-        self.latest = None          # (t, race_on, speed_mps, tele_steer)
+        self.latest = None          # (t, race_on, speed_mps, tele_steer, race_time, distance)
+        # Rewind watchdog: the race clock only runs forwards while driving, so any step back means
+        # Forza rewound (seen either during the rewind, or on the first packet after it).
+        self.last_backjump = -1e9
         self.stop = threading.Event()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", port))
         self.sock.settimeout(0.2)
 
     def run(self):
+        prev_race_time = None
         while not self.stop.is_set():
             try:
                 data, _ = self.sock.recvfrom(1024)
@@ -308,15 +314,23 @@ class TelemetryReader(threading.Thread):
                 continue
             if len(data) < 321:
                 continue
-            self.latest = (time.perf_counter(),
-                           struct.unpack_from("<i", data, 0)[0],
+            now = time.perf_counter()
+            race_on = struct.unpack_from("<i", data, 0)[0]
+            race_time = struct.unpack_from("<f", data, 308)[0]
+            if race_on == 1:
+                if prev_race_time is not None and race_time < prev_race_time - 0.05:
+                    self.last_backjump = now   # set before latest, so the main loop never misses it
+                prev_race_time = race_time
+            self.latest = (now, race_on,
                            struct.unpack_from("<f", data, 256)[0],
-                           struct.unpack_from("<b", data, 320)[0])
+                           struct.unpack_from("<b", data, 320)[0],
+                           race_time,
+                           struct.unpack_from("<f", data, 292)[0])
         self.sock.close()
 
 
 COLUMNS = ["frame", "segment", "t", "steer_raw", "steer_deg", "brake", "gas",
-           "wheel_age_ms", "speed_mps", "race_on", "tele_steer", "tele_age_ms"]
+           "wheel_age_ms", "speed_mps", "race_on", "tele_steer", "tele_age_ms", "race_time", "distance"]
 
 
 class Writer(threading.Thread):
@@ -427,8 +441,11 @@ def cmd_record(args):
                 active, state = True, "REC"
 
             # Rewind: the last few seconds were the mistake, and the rewind playback itself is
-            # backwards footage. Drop both; driving resumes in a new segment after release.
-            rewinding = args.rewind_button is not None and args.rewind_button in wheel.buttons
+            # backwards footage. Drop both; driving resumes in a new segment afterwards.
+            # Detected by the race clock going backwards (watchdog) or the rewind button.
+            button = args.rewind_button is not None and args.rewind_button in wheel.buttons
+            auto = tele is not None and not args.no_auto_rewind and t - tele.last_backjump < 0.3
+            rewinding = button or auto
             if rewinding:
                 if not was_rewinding:
                     rewinds += 1
@@ -447,11 +464,14 @@ def cmd_record(args):
                 row = [frame_idx, segment, f"{t - t_start:.4f}", steer, f"{steer / STEER_UNITS_PER_DEG:.2f}",
                        f"{brake:.4f}", f"{gas:.4f}", f"{(t - wt) * 1000:.1f}",
                        f"{tl[2]:.3f}" if tl else "", tl[1] if tl else "",
-                       tl[3] if tl else "", f"{(t - tl[0]) * 1000:.1f}" if tl else ""]
+                       tl[3] if tl else "", f"{(t - tl[0]) * 1000:.1f}" if tl else "",
+                       f"{tl[4]:.3f}" if tl else "", f"{tl[5]:.1f}" if tl else ""]
                 pending.append((t, segment, process(img, masks, size), row))
                 frame_idx += 1
-            while pending and t - pending[0][0] > args.drop_seconds:
-                flush()
+                # Only flush while driving: if telemetry stops during a rewind, the frames before it
+                # must still be here when the clock jump shows up on the first packet after it.
+                while pending and t - pending[0][0] > args.drop_seconds:
+                    flush()
 
             if t - last_status > 0.5:
                 last_status = t
@@ -517,7 +537,9 @@ def main():
     rp.add_argument("--rewind-button", type=int, default=None,
                     help="TMX button bound to Rewind in Forza (number from: python utils\\test.py wheel)")
     rp.add_argument("--drop-seconds", type=float, default=5.0,
-                    help="seconds of frames thrown away when rewind is pressed")
+                    help="seconds of frames thrown away on a rewind")
+    rp.add_argument("--no-auto-rewind", action="store_true",
+                    help="turn off the race-clock rewind watchdog (button only)")
     args = p.parse_args()
     {"setup": cmd_setup, "preview": cmd_preview, "record": cmd_record}[args.cmd](args)
 
