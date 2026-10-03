@@ -9,10 +9,11 @@ are applied. Stopping our effects does not certify the absence of driver forces.
 
 import importlib
 import sys
+import time
 from collections.abc import Mapping
 from ctypes import c_uint
 
-from ..contracts import WheelState
+from ..contracts import ActuationExpired, WheelState
 from .conversions import (
     finite,
     pedal_fraction,
@@ -22,6 +23,9 @@ from .conversions import (
     vjoy_pedal,
     vjoy_steering,
 )
+
+
+_NO_DEADLINE = object()
 
 
 class HardwareError(RuntimeError):
@@ -256,10 +260,37 @@ class WindowsAdapter:
             raise HardwareError("vJoy neutralization failed: " + "; ".join(errors))
 
     def set_torque(self, torque: float) -> None:
+        """Legacy finite effect, or unconditional zero-torque cleanup.
+
+        Live control must use ``set_torque_before`` for nonzero output so driver
+        work cannot silently renew a command whose input samples have expired.
+        """
+        self._set_torque(torque)
+
+    def set_torque_before(self, torque: float, deadline_ns: int) -> None:
+        """Start a finite effect only while its absolute host deadline permits.
+
+        Reserve time for native update/start calls and recheck their returns.
+        Expiry stops effects and raises ``ActuationExpired`` for the runtime to
+        latch disengagement. Zero output always stops even after the deadline.
+
+        SDL calls are synchronous and cannot provide a hard real-time guarantee:
+        a blocked RunEffect may start force before returning. A late return is
+        stopped immediately; the finite driver effect is the fallback while the
+        call is blocked. Actual duration enforcement still needs hardware tests.
+        """
+        self._set_torque(torque, deadline_ns=deadline_ns)
+
+    def _set_torque(self, torque: float, *, deadline_ns=_NO_DEADLINE) -> None:
         self._ensure_open()
         sdl = self._sdl
         try:
             level = sdl_force_level(torque, self.torque_limit)
+            timed = deadline_ns is not _NO_DEADLINE
+            if timed and (type(deadline_ns) is not int or deadline_ns < 0):
+                raise ValueError("deadline_ns must be nonnegative monotonic nanoseconds")
+            if timed and level and time.monotonic_ns() >= deadline_ns:
+                raise ActuationExpired("actuation deadline expired before native output")
             if not self._attached():
                 raise HardwareError("TMX disconnected")
             self._check_sdl(sdl.SDL_HapticStopEffect(self._haptic, self._effect_id),
@@ -267,14 +298,30 @@ class WindowsAdapter:
             if level == 0:
                 return
             self._effect.constant.level = level
+            effect_ms = self.effect_ttl_ms
+            if timed:
+                # Whole milliseconds only: rounding up would exceed validity.
+                available_ms = (deadline_ns - time.monotonic_ns()) // 1_000_000
+                # Leave 1--5 ms for UpdateEffect/RunEffect. If native work spends
+                # that allowance, fail closed instead of starting a too-long
+                # effect or entering an unbounded update/retry loop.
+                reserve_ms = max(1, min(5, available_ms // 4))
+                effect_ms = min(effect_ms, available_ms - reserve_ms)
+                if effect_ms < 1:
+                    raise ActuationExpired("actuation deadline exhausted after native stop")
+            self._effect.constant.length = effect_ms
             # SDL 2.32.10's DirectInput UpdateEffect only calls SetParameters.
             # Do not assume it renews duration. Stop/update/run exactly once:
             # https://github.com/libsdl-org/SDL/blob/release-2.32.10/src/haptic/windows/SDL_dinputhaptic.c
             # https://wiki.libsdl.org/SDL2/SDL_HapticRunEffect
             self._check_sdl(sdl.SDL_HapticUpdateEffect(self._haptic, self._effect_id, self._effect),
                             "SDL_HapticUpdateEffect")
+            if timed and time.monotonic_ns() + effect_ms * 1_000_000 > deadline_ns:
+                raise ActuationExpired("actuation deadline exhausted by native update")
             self._check_sdl(sdl.SDL_HapticRunEffect(self._haptic, self._effect_id, 1),
                             "SDL_HapticRunEffect")
+            if timed and time.monotonic_ns() + effect_ms * 1_000_000 > deadline_ns:
+                raise ActuationExpired("actuation deadline exhausted by native start")
         except BaseException:
             try:
                 self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
