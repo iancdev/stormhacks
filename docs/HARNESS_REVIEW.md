@@ -1,9 +1,24 @@
 # Harness review — 2026-10-03
 
-Reviewed baseline: `7a9f425`. This is a report of confirmed defects, not a claim
-that the defects have been fixed. The dashboard redesign and display telemetry
-are separate changes. Existing full suite: 365 tests and 192 subtests passed.
-Reproductions used mock hardware, temporary files, and loopback networking only.
+Reviewed baseline: `7a9f425`. The four defects below were reproduced and then
+fixed after explicit user authorization. The descriptions preserve the original
+failure evidence. The original suite passed 365 tests despite these gaps.
+Reproductions and fix validation used mock hardware, temporary files, simulated
+control, and loopback networking; no physical motors were operated.
+
+## Fix status
+
+| Finding | Implemented correction | Evidence |
+| --- | --- | --- |
+| Native actuation expiry | Absolute deadline passed to the adapter; checks after preparation, bounded effect duration, late-return stop and latched fault | `53d76e2`, runtime integration `406fbe9`; delayed native-call and all-deadline-limit regressions |
+| Transient inference failure | Persistent failure generation consumed before control and again before output; fresh retries cannot erase it or re-arm | `3557c73`, integration `406fbe9`; deterministic races and real loopback failure/reconnect |
+| Recorder detach | Attachment checks around polling, invalidation of readiness/cached samples, error propagation and neutralization | `bef8f09`; detach-after-warmup and detach-during-capture regressions |
+| Launcher interrupt | Explicit child lifecycle, 15-second cleanup grace, bounded escalation, durable exit outcome | `406fbe9`; real 700 ms child cleanup and repeated-interrupt regressions |
+
+Final integrated verification: **445 tests and 192 subtests passed** after the
+fixes and the separately owned bounded data-compatibility update. Follow-up
+reviews found no blocking gap in deadline propagation or failure-generation
+consumption. Desktop/narrow dashboard controls were tested with synthetic data.
 
 ## P1: expired commands can start new native motor effects
 
@@ -81,7 +96,9 @@ telemetry lookup, dataset grouping, incomplete-writer closure, PNG integrity,
 or response correlation during this review. Passing tests do not prove these
 paths or native drivers are defect-free.
 
-Fix the two P1 cases before physical assisted steering. Fix the recorder and
-launcher cases before relying on unattended long recordings and normal Ctrl+C
-completion. Dataset/model performance and actual two-PC/hardware acceptance are
-separate from these code defects.
+All four confirmed code findings are addressed. Native SDL calls remain
+synchronous; no Python wrapper can guarantee hard real-time behavior inside a
+blocked driver call. Actual driver expiry behavior, physical tracking, Windows
+console shutdown and real two-PC operation still need on-device acceptance.
+Dataset/model performance and production data-schema compatibility remain
+separate from the harness fixes.

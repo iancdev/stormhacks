@@ -78,8 +78,8 @@ This screenshot is from simulated hardware, not a physical driving result:
 
 [Narrow-screen preview](assets/dashboard-mobile-preview.jpg). The screenshots
 use synthetic signals, including a deliberately visible latched fault state;
-they are not evidence of physical driving or hardware acceptance. Known control
-defects from the code review remain listed in [HARNESS_REVIEW.md](HARNESS_REVIEW.md).
+they are not evidence of physical driving or hardware acceptance. The review
+findings, implemented fixes and verification limits are in [HARNESS_REVIEW.md](HARNESS_REVIEW.md).
 
 ## Integrated recordings and human corrections
 

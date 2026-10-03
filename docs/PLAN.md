@@ -72,19 +72,36 @@ See [OPERATIONS.md](OPERATIONS.md) and [configs/README.md](../configs/README.md)
 
 ## Harness review and dashboard refinement
 
-The review of `7a9f425` confirmed four open defects, detailed with reproductions
+The review of `7a9f425` confirmed four defects, detailed with reproductions
 in [HARNESS_REVIEW.md](HARNESS_REVIEW.md): native actuation after command expiry
 (P1), unlatched transient inference failure (P1), missing standalone-recorder
 attachment checks (P2), and launcher Ctrl+C interrupting cleanup (P2). These
-control/data fixes were reported, not applied as part of the dashboard work.
-Address the P1 issues before physical assisted steering.
+control/data fixes were initially reported separately from the dashboard work,
+then explicitly authorized and implemented: native deadlines (`53d76e2`), sticky
+policy failure generations (`3557c73`), standalone wheel detachment (`bef8f09`),
+and runtime/graceful-launch integration (`406fbe9`). All four now have focused
+regressions and follow-up review. Actual hardware/Windows acceptance remains.
 
 The dashboard was separately redesigned with measured pipeline rates, three
 time-based charts, contextual states, recording/evaluation panels, a sticky
 disengagement action, and runtime-confirmed request feedback. Verified in a
 browser at desktop and 390px width with synthetic signals; no horizontal overflow
 was observed. Current full software suite: **401 tests and 192 subtests passed**.
-Passing tests do not negate the reproduced review findings.
+The original reproductions are retained in the review report along with their
+implemented fixes and verification limits.
+
+The training owner also supplied `5587452`, now integrated: narrowly bounded
+legacy Ctrl+C empty-tail compatibility and read-only diagnostic inspection of
+known extended CSV fields. Diagnostic objects cannot enter production splits.
+The coordinating chat reports an isolated CUDA smoke on the supplied sample;
+that does not establish production import compatibility or driving quality.
+The actual extended producer schema remains gated pending its source/context.
+
+Latest integrated verification after all harness fixes and `5587452` integration:
+**445 tests and 192 subtests passed**. Native deadline propagation and transient
+failure consumption received follow-up review; launcher regressions include
+real graceful child shutdown and repeated parent interrupts. Actual Windows
+motor/console behavior and real LAN acceptance remain separate gates.
 
 ## Next integration gates
 

@@ -42,6 +42,11 @@ not activate a virtual environment, change execution policy, or edit firewalls.
 Ctrl+C and console commands are passed through to the runtime. All launches use
 argument lists, never shell command strings.
 
+On Ctrl+C, the launcher allows up to 15 seconds for child cleanup and recording
+drain before bounded termination/kill escalation. `exit.json` records whether
+shutdown was interrupted or forced. Normal graceful shutdown is regression-tested
+with a real child process; Windows console behavior still requires device validation.
+
 ## Game settings
 
 - `inference.host`: the desktop's numeric LAN IPv4. The desktop's
