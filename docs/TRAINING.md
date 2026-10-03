@@ -126,3 +126,26 @@ add speed, and predict physical TMX angle instead of inverse turning radius.
 There is no geometric augmentation or arbitrary shifted-image steering label.
 Camera geometry and a justified label transform are needed before adding recovery
 augmentation. Curve balancing and real-data tuning remain future work.
+
+## Colab setup cells
+
+`notebooks/train_colab.ipynb` defaults to an executable two-epoch CPU synthetic
+smoke run. Download a ZIP of the training branch from signed-in private GitHub,
+then select it in the repository upload cell. Alternatively select `existing`
+and point at a securely cloned checkout. No access token belongs in the notebook.
+
+For real data set `SYNTHETIC = False`, select a GPU runtime, and put completed
+session ZIPs under the configured Drive `ARCHIVE_DIR`. Executable setup cells
+extract into runtime-local `DATA` and validate every session. ZIPs may contain a
+single session at the root or session folders directly below the root. Traversal,
+symlinks/special files, duplicate paths, invalid layouts, duplicate session IDs,
+and incomplete sessions are rejected. An existing destination is never replaced;
+set `REUSE_DATA = True` only after a successful import, or choose a fresh path.
+The stdlib helper is maintained in `scripts/colab_archives.py` and embedded in the
+notebook for repository bootstrap; a test enforces equality.
+
+Real checkpoints persist under `RUN` on Drive; synthetic defaults are ephemeral.
+Set `RESUME = True` and a higher total `EPOCHS` to continue. Export folders include
+the target epoch count; choose a new export destination when reevaluating the
+same epoch. Notebook cells are locally smoke-tested, but Google authentication,
+Drive mounting, and GPU execution still require validation in Colab.
