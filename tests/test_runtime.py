@@ -88,6 +88,34 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(adapter.closed)
         self.assertEqual(adapter.torque, 0)
 
+    def test_output_delay_cannot_use_aged_wheel_for_torque(self):
+        from dataclasses import replace
+
+        class DelayedAdapter(SimulatedAdapter):
+            def __init__(self):
+                super().__init__()
+                self.last_sample = None
+                self.invalid_outputs = []
+
+            def read_state(self, now_ns):
+                self.last_sample = replace(super().read_state(now_ns), timestamp_ns=now_ns - 35_000_000)
+                return self.last_sample
+
+            def write_virtual_state(self, state):
+                super().write_virtual_state(state)
+                time.sleep(0.025)
+
+            def set_torque(self, torque):
+                if torque and time.monotonic_ns() - self.last_sample.timestamp_ns > 50_000_000:
+                    self.invalid_outputs.append(torque)
+                super().set_torque(torque)
+
+        adapter = DelayedAdapter()
+        result = run(adapter, FixedAnglePolicy(10), assist=True, duration=0.18)
+        self.assertFalse(adapter.invalid_outputs)
+        self.assertEqual(result["reason"], "stale_wheel")
+        self.assertEqual(result["max_abs_torque"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

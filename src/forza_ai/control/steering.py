@@ -69,7 +69,7 @@ class SteeringController:
             return "wheel_time_reversed"
         return None
 
-    def _command_error(self, command: SteeringCommand | None, now_ns: int) -> str | None:
+    def command_error(self, command: SteeringCommand | None, now_ns: int) -> str | None:
         if command is None:
             return "no_command"
         if not math.isfinite(command.target_angle_deg):
@@ -121,7 +121,7 @@ class SteeringController:
             self.disengage()
             return self._status(wheel, 0.0)
 
-        command_error = self._command_error(command, now_ns)
+        command_error = self.command_error(command, now_ns)
         if engage and self.mode != ControlMode.ASSIST:
             if command_error:
                 self.disengage(command_error)

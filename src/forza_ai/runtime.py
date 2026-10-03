@@ -9,7 +9,7 @@ control test, never an autonomous driving policy.
 
 import argparse
 import csv
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import math
 from pathlib import Path
@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-from forza_ai.contracts import SteeringCommand
+from forza_ai.contracts import ControlMode, SteeringCommand
 from forza_ai.control import SteeringConfig, SteeringController
 from forza_ai.policies.placeholder import FixedAnglePolicy, TestObservation
 from forza_ai.simulation import SimulatedAdapter
@@ -170,10 +170,14 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             after_io = time.monotonic_ns()
             if after_io - now_ns > controller.config.max_wheel_age_ns:
                 raise RuntimeError("hardware_output_stalled")
-            # Output latency must not carry a once-valid command beyond expiry.
-            if status.torque and command is not None and after_io >= command.valid_until_ns:
-                controller.disengage("command_expired")
-                status = controller.step(wheel, command, after_io)
+            # Revalidate ALL ages after I/O, without integrating the controller
+            # twice. A sample can age out even when this write was individually fast.
+            wheel_error = controller.wheel_error(wheel, after_io)
+            command_error = controller.command_error(command, after_io)
+            output_error = wheel_error or (command_error if status.mode == ControlMode.ASSIST else None)
+            if output_error:
+                controller.disengage(output_error, fault=wheel_error is not None)
+                status = replace(status, mode=controller.mode, reason=output_error, torque=0.0)
             adapter.set_torque(status.torque)
             summary.update(ticks=summary["ticks"] + 1,
                            max_abs_torque=max(summary["max_abs_torque"], abs(status.torque)),
