@@ -85,6 +85,8 @@ is the checkpoint with lowest held-out RMSE. Writes use a temporary file followe
 by replace. Persist the run directory outside Colab's ephemeral filesystem.
 A stopped partial epoch is repeated from the last completed checkpoint.
 `resume --epochs N` means a **total** of N epochs; saved configuration is reused.
+Resume writes into the checkpoint directory. To relocate a run, copy the whole
+run directory (including best.pt) and resume there.
 Resume validates exact dataset contents, permitting a different filesystem root
 but rejecting added, removed, or changed sessions. Deterministic CPU continuation
 is tested; bitwise equality across devices/PyTorch versions is not promised.

@@ -43,7 +43,6 @@ def main(argv=None):
     resume = subs.add_parser('resume', help='continue to a total epoch count using saved configuration')
     resume.add_argument('checkpoint', type=Path)
     resume.add_argument('data', type=Path)
-    resume.add_argument('--output', type=Path, help='defaults to checkpoint directory')
     resume.add_argument('--epochs', type=int, required=True)
     resume.add_argument('--device', default='auto')
     evaluate = subs.add_parser('evaluate', help='report held-out model, zero and training-mean errors')
@@ -71,7 +70,7 @@ def main(argv=None):
                                             args.validation_fraction, args.seed, args.workers)
                 engine.train(args.data, args.output, args.epochs, config, _get_alignment(args), device=args.device)
             elif args.command == 'resume':
-                engine.train(args.data, args.output or args.checkpoint.parent, args.epochs,
+                engine.train(args.data, args.checkpoint.parent, args.epochs,
                              device=args.device, resume=args.checkpoint)
             elif args.command == 'evaluate':
                 print(json.dumps(engine.evaluate(args.checkpoint, args.data, args.device, args.unseen), indent=2))

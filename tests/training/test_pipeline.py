@@ -127,3 +127,64 @@ def test_train_resume_evaluate_export(data, tmp_path):
     edit_csv(data / 'synthetic-000' / 'wheel.csv', lambda rows: rows[0].update(angle_deg='1'))
     with pytest.raises(ValueError, match='dataset changed'):
         train(data, resumed, epochs=3, resume=resumed / 'last.pt')
+
+
+def test_negative_offset_and_stale_speed_inside_interval(data):
+    path = data / 'synthetic-000'
+    samples = load_session(path, Alignment(label_offset_ns=-33_333_333))
+    assert samples.rejected['wheel_coverage'] == 1
+    assert samples.samples[0].angle_deg == 0
+    edit_csv(path / 'telemetry.csv', lambda rows: rows.__delitem__(slice(1, 5)))
+    result = load_session(path, Alignment(label_offset_ns=166_666_665))
+    assert result.rejected['stale_telemetry'] >= 1
+
+
+def test_image_symlink_and_corrupt_image_rejected(data, tmp_path):
+    path = data / 'synthetic-000'
+    image = path / 'images/000000.png'
+    image.unlink()
+    outside = tmp_path / 'outside.png'
+    Image.new('RGB', (10, 10)).save(outside)
+    image.symlink_to(outside)
+    with pytest.raises(ValueError, match='escapes'):
+        load_session(path)
+    image.unlink()
+    image.write_text('not an image')
+    with pytest.raises(OSError):
+        load_session(path)
+
+
+def test_no_eligible_samples_and_duplicate_ids(data):
+    path = data / 'synthetic-000'
+    edit_csv(path / 'wheel.csv', lambda rows: [r.update(control_mode='assist') for r in rows])
+    with pytest.raises(ValueError, match='accepted samples'):
+        split_sessions(load_sessions(data), .25, 7)
+    meta_path = path / 'metadata.json'
+    metadata = json.loads(meta_path.read_text())
+    metadata['session_id'] = 'synthetic-001'
+    meta_path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='unique'):
+        load_sessions(data)
+
+
+def test_export_parity_and_validation_integrity(data, tmp_path):
+    from forza_ai.policies.steering_model import Preprocessing, SteeringModel, preprocess_rgb
+    torch.set_num_threads(1)
+    output = tmp_path / 'run'
+    saved = train(data, output, config=TrainConfig(batch_size=8), device='cpu')
+    export(output / 'last.pt', tmp_path / 'artifact')
+    predictor = SteeringPredictor(tmp_path / 'artifact')
+    sample = load_sessions(data)[0].samples[0]
+    pixels = np.asarray(Image.open(sample.image_path).convert('RGB'))
+    model = SteeringModel().eval()
+    model.load_state_dict(saved['model_state'])
+    with torch.inference_mode():
+        expected = model(preprocess_rgb(pixels, Preprocessing()).unsqueeze(0),
+                         torch.tensor([sample.speed_mps / 50])).item() * 450
+    assert predictor.predict(pixels, sample.speed_mps) == expected
+    with pytest.raises(ValueError, match='checkpoint directory'):
+        train(data, tmp_path / 'different-run', epochs=2, resume=output / 'last.pt')
+    held_out = data / saved['validation_sessions'][0]
+    edit_csv(held_out / 'wheel.csv', lambda rows: rows[0].update(angle_deg='1'))
+    with pytest.raises(ValueError, match='validation data changed'):
+        evaluate(output / 'last.pt', data)

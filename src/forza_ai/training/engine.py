@@ -102,6 +102,8 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
     output = Path(output)
     if resume is None and output.exists() and any(output.iterdir()):
         raise ValueError('new training output directory must be empty; use resume to continue')
+    if resume and output.resolve() != Path(resume).resolve().parent:
+        raise ValueError('resume must write into its checkpoint directory; copy the whole run to relocate it')
     saved = load_checkpoint(resume) if resume else None
     if saved:
         config = TrainConfig(**saved['train_config'])
