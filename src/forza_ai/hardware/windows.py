@@ -211,11 +211,24 @@ class WindowsAdapter:
                              "set button")
 
     def _reset_virtual(self) -> None:
-        self._check_vjoy(self._sdk.ResetVJD(self._vjoy_id), "reset")
+        # Continue every neutralization step if one fails. A missing X axis or a
+        # failed ResetVJD must not prevent an otherwise writable pedal release.
         # ResetVJD centers axes; our inverted pedals must instead be released.
-        self._axis(self._vjoy.HID_USAGE_X, 16384)
-        self._axis(self._vjoy.HID_USAGE_Y, 32768)
-        self._axis(self._vjoy.HID_USAGE_Z, 32768)
+        operations = (
+            lambda: self._check_vjoy(self._sdk.ResetVJD(self._vjoy_id), "reset"),
+            lambda: self._axis(self._vjoy.HID_USAGE_X, 16384),
+            lambda: self._axis(self._vjoy.HID_USAGE_Y, 32768),
+            lambda: self._axis(self._vjoy.HID_USAGE_Z, 32768),
+            lambda: self._check_vjoy(self._sdk.ResetButtons(self._vjoy_id), "reset buttons"),
+        )
+        errors = []
+        for operation in operations:
+            try:
+                operation()
+            except Exception as error:
+                errors.append(str(error))
+        if errors:
+            raise HardwareError("vJoy neutralization failed: " + "; ".join(errors))
 
     def set_torque(self, torque: float) -> None:
         self._ensure_open()

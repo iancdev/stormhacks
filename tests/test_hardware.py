@@ -63,6 +63,7 @@ class Rig:
             GetVJDStatus=Mock(side_effect=lambda device: self.status),
             AcquireVJD=Mock(side_effect=self.acquire),
             ResetVJD=Mock(side_effect=self.reset),
+            ResetButtons=Mock(side_effect=self.reset_buttons),
             SetAxis=Mock(side_effect=self.axis),
             SetBtn=Mock(side_effect=self.button),
             _vj=SimpleNamespace(RelinquishVJD=Mock(side_effect=self.release)),
@@ -109,6 +110,10 @@ class Rig:
 
     def axis(self, value, device, usage):
         self.virtual_axes[usage] = value
+        return True
+
+    def reset_buttons(self, device):
+        self.virtual_buttons = {}
         return True
 
     def button(self, pressed, device, button):
@@ -311,6 +316,23 @@ class AdapterTests(unittest.TestCase):
         self.rig.sdl.SDL_HapticClose.assert_called_once()
         self.rig.sdl.SDL_JoystickClose.assert_called_once()
         self.assertTrue(adapter.cleanup_errors)
+
+    def test_close_releases_pedals_and_buttons_despite_reset_and_steering_failure(self):
+        adapter = self.open(button_map={0: 1})
+        adapter.write_virtual_state(WheelState(1, 450, 1, 1, (0,)))
+        self.rig.sdk.ResetVJD.side_effect = None
+        self.rig.sdk.ResetVJD.return_value = False
+        def axis_with_broken_steering(value, device, usage):
+            if usage == 0x30:
+                raise RuntimeError("X failed")
+            return self.rig.axis(value, device, usage)
+        self.rig.sdk.SetAxis.side_effect = axis_with_broken_steering
+        with self.assertRaisesRegex(HardwareError, "Cleanup failed"):
+            adapter.close()
+        self.assertEqual(self.rig.virtual_axes[0x31], 32768)
+        self.assertEqual(self.rig.virtual_axes[0x32], 32768)
+        self.assertEqual(self.rig.virtual_buttons, {})
+        self.rig.sdk._vj.RelinquishVJD.assert_called_once()
 
     def test_invalid_configuration_rejected(self):
         for configuration in ({"effect_ttl_ms": 0}, {"effect_ttl_ms": 1000},
