@@ -680,3 +680,175 @@ GTA V frame+steering landscape: the only published datasets with CONTINUOUS stee
 
 ## Task 6 summary note
 ETS2: the only ever-published ETS2 frame+wheel dataset is europilot's (162,495 imgs + CSV, G27 wheel-axis [-32767,32767], no speed) — and its Google Drive link is verified DEAD (404 "does not exist"); no mirror found. Everything else ETS2 is collect-your-own code: boris-ns/ats-autopilot (README cites two 40k-image datasets trained on; only a 6-jpg dataset-example stub ships), manvydasu/Euro-truck-simulator2_self_driving (~40k imgs collected, none shipped), Dodecahedrane/ETS2-Self-Driving-AI (steering inferred from video of the wheel, no data), aleju/self-driving-truck (RL, no data), kdimon15/self-driving-ETS2 (no data). The 344 GB yinhuankuang HF repo has real per-frame synced ETS2 sessions but labels are mouse/key events, not wheel angle. ASSETTO CORSA: no AC frame+steer dataset exists publicly; the verified downloadable ACGym set is telemetry-only (CC-BY-4.0, 64M steps, 2.3M human, 50 Hz, steerAngle/speed/pedals, MoTeC .ld) — the best human-sim-driving corpus found in this whole survey, but unusable for CNN pretraining. AC-Synced-Logger is only a (well-designed, degrees+MPH schema) recorder. BEAMNG: only test-generation execution telemetry exists publicly (TRAVEL CC-BY-4.0 + Zenodo 14599223), no images; BeamNG's 50k set is semantic annotation. NET: zero downloadable frame+steering datasets in any of the three sims; europilot's format is the design to copy and ACGym is the best telemetry corpus.
+
+## CARLA CoRL 2017 Conditional Imitation Learning dataset (carla-simulator/imitation-learning)  [PARTIAL]  (task 7)
+- URL: https://github.com/carla-simulator/imitation-learning ; data https://drive.google.com/file/d/1hloAeyamYn-H6MfV1dRtY1gJPhkR55sY/view (file CORL2017ImitationLearningData.tar.gz)
+- Maintainer: carla-simulator org / Felipe Codevilla, Matthias Müller, Alexey Dosovitskiy, Antonio López, Vladlen Koltun (Intel Labs + CVC Barcelona); Codevilla et al. ICRA 2018
+- Date (created / last updated): 2017-2018 (CoRL 2017 paper; arXiv 1710.02410); repo 41 commits, ~2018 era
+- License: repo MIT; dataset itself has no license statement — unverified
+- Size (frames / hours / GB): 24 GB tar.gz (README); ~14 hours of HUMAN driving per the CoRL 2017 paper; HDF5 files of 200 datapoints each
+- Image resolution & camera view: 'images_center' RGB at 200x88, forward-facing centre camera (CARLA 0.8.x); target vector includes Camera + Angle fields so multi-camera data exists in the files (3-cam layout unverified inside archives)
+- Label columns & units (degrees / normalized / gamepad axis): 28-field 'targets' vector — Steer float NORMALIZED -1..1 (paper: "-1 and 1 correspond to full left and full right"), Gas, Brake, HandBrake, Reverse gear, steer/gas/brake noise fields, Position X/Y, Speed, 3 collision counters, lane/sidewalk intersection, accel XYZ, platform+game time, orientation, high-level command (2 follow, 3 left, 4 right, 5 straight). NOT wheel degrees.
+- Speed included: yes — Speed float (km/h per CARLA 0.8.x convention; unit unverified inside h5)
+- Per-frame synced: yes — each datapoint = image + measurement tuple
+- Download method: Google Drive — file page LIVE today (title "CORL2017ImitationLearningData.tar.gz" verified 2026-10-03); >2 GB Drive files need the gdown/confirm flow
+- Known problems: normalized steer, not degrees; CARLA 0.8.x-era graphics; HDF5 blobs; dataset licence unstated; noise-augmented frames included by design
+- Notes: THE canonical CARLA frame+steer+speed dataset and the closest published sim analog to our pipeline. One of the very few sets anywhere whose labels come from humans.
+
+## Bench2Drive official training data (rethinklab/Bench2Drive + Full, Hugging Face)  [PARTIAL]  (task 7)
+- URL: https://huggingface.co/datasets/rethinklab/Bench2Drive (Base, 1000 clips) ; Full https://huggingface.co/datasets/rethinklab/Bench2Drive-Full (+Bench2Drive-Full-Sup) ; Mini via tools/download_mini.sh ; repo https://github.com/Thinklab-SJTU/Bench2Drive ; paper arXiv 2406.03877 (NeurIPS 2024 Datasets & Benchmarks)
+- Maintainer: Thinklab, Shanghai Jiao Tong University (Xiaosong Jia, Junchi Yan et al.)
+- Date (created / last updated): created 2024-05-01, lastModified 2024-08-14 (HF API verified)
+- License: Apache-2.0 (HF cardData verified)
+- Size (frames / hours / GB): 2M fully annotated frames / 13,638 clips total across 44 scenarios, 23 weathers, 12 towns; Base = 1000 clips / 335 GB total file size (HF page verified), Full ~4 TB (9,888 files), Mini ~4 GB; 24,174 downloads last month
+- Image resolution & camera view: multi-cam RGB 1600x900 (anno.md: image_size_x 1600, image_size_y 900) + LiDAR + RADAR + 2D/3D boxes + depth/seg; CAM_XXXX surround set, not a bonnet cam
+- Label columns & units: per-frame gzipped anno JSON: throttle, steer, brake, reverse, theta, speed, pos x/y, near/far command waypoints, next_command, weather, acceleration, angular_velocity + full sensor calibration. CARLA API control values -> steer normalized -1..1; speed units unverified (CARLA 0.9.15 convention suggests m/s)
+- Speed included: yes (speed field per anno)
+- Per-frame synced: yes
+- Download method: huggingface-cli / hf_hub_download — gated:false verified; Baidu Cloud mirror for CN users
+- Known problems: expert = Think2Drive WORLD-MODEL RL agent, not human; steer normalized; clips are short scenario snippets (cut-in, overtaking), not free lane-keeping; huge
+- Notes: the biggest license-clean CARLA IL corpus; overkill for our use but authoritative and citable.
+
+## roboticslaburjc-org/CARLA_e2e_autonomous_driving (Hugging Face)  [PARTIAL]  (task 7)
+- URL: https://huggingface.co/datasets/roboticslaburjc-org/CARLA_e2e_autonomous_driving
+- Maintainer: RoboticsLabURJC (Universidad Rey Juan Carlos — the Behavior Metrics / JdeRobot e2e-driving group; same ecosystem as sergiopaniego's CARLA sets)
+- Date (created / last updated): created 2025-05-12, lastModified 2026-07-12 (HF API verified); 87 downloads
+- License: Apache-2.0 (verified)
+- Size (frames / hours / GB): 16 zips, ~163 GB total (verified HF tree sizes: Town01_wheel 9.0 GB, Town01_manual 11.7 GB, Town02_wheel 11.7 GB, Town02_manual 16.9 GB, Town02_wheel_dagger 11.2 GB, Town02_wheel_noise 22.6 GB, Town03_wheel 14.2 GB, Town05_wheel 12.7 GB, Town07_wheel 10.0 GB + dagger variants + CARLA_dataset_route(+dagger)); HF imagefolder viewer indexes 286,575 images
+- Image resolution & camera view: PNG frames inside per-run dirs (verified zip listing: Town01_wheel/curve_0_wheel_0/1.png ...). Resolution and camera view unverified — this group's related datasets use bird-eye-view crops
+- Label columns & units: VERIFIED by decompressing a data.csv from inside Town01_wheel.zip: header `image_name,throttle,steer`; steer is normalized CARLA-axis units (sampled values -0.015..+0.016 on a near-straight run), throttle constant 0.5 in that clip. NOT degrees. "wheel" dirs = steering-wheel captures, "manual"/"dagger"/"noise" = keyboard-or-manual / DAgger / noise-augmented variants (semantics per URJC docs, unverified)
+- Speed included: NO in the verified csv schema (only image_name,throttle,steer); other dirs unverified
+- Per-frame synced: yes — one csv row per PNG
+- Download method: hf_hub_download, ungated
+- Known problems: minimal schema (no speed/brake in the verified file); camera view unverified; normalized labels
+- Notes: closest format match to ours found anywhere in a sim (frame.png + data.csv row, real steering-wheel input channel) — the "wheel" subsets are HUMAN-driven CARLA data.
+
+## sergiopaniego/CarlaFollowLanePreviousV (Hugging Face)  [PARTIAL]  (task 7)
+- URL: https://huggingface.co/datasets/sergiopaniego/CarlaFollowLanePreviousV
+- Maintainer: Sergio Paniego (RoboticsLabURJC)
+- Date (created / last updated): created 2023-09-05, lastModified 2023-09-06 (HF API verified); 28 downloads
+- License: Apache-2.0 (verified)
+- Size (frames / hours / GB): ~57.6k examples across 11 run folders — Towns 01/03/05/07, clockwise+anticlockwise, "extreme" variants (counts verified in README table: 1582+4957+1911+6184+6056+7285+5487+10375+12094+1781+1930); single zip carla_dataset_previous_v.zip
+- Image resolution & camera view: bird-eye-view images (README: "bird-eye-view of the camera") — NOT bonnet/front cam
+- Label columns & units: control commands generated by the CARLA 0.9.12 AUTOPILOT expert, plus previous speed (README verified); exact in-zip schema unverified; CARLA normalized units expected
+- Speed included: yes — previous speed is an explicit stored input
+- Per-frame synced: yes
+- Download method: hf, ungated
+- Known problems: autopilot (non-human) labels; BEV input doesn't transfer to a bonnet-cam CNN
+- Notes: same URJC family; more useful as schema reference than as data for us.
+
+## mmahdavi/carla_1.8m (Hugging Face)  [PARTIAL]  (task 7)
+- URL: https://huggingface.co/datasets/mmahdavi/carla_1.8m
+- Maintainer: mmahdavi (HF user; affiliation/paper link unverified)
+- Date (created / last updated): created 2024-03-04, lastModified 2024-03-05 (HF API verified); 16 downloads
+- License: MIT (HF tags)
+- Size (frames / hours / GB): 14 zips ≈ 247 GB total (verified tree sizes: Scenario1/3/4/7-12 zips 10-47 GB each + ll/lr/rl/rr turn-class zips 4-8 GB); "1.8m" presumably = 1.8M frames — name only, unverified. HF datasets-server fails with BadZipFile on it
+- Image resolution & camera view: standard leaderboard-collector layout (verified inside ll.zip: Town05_ll/Town05_ll_route4_.../measurements/NNNN.json + topdown/encoded_NNNN.png); rgb/lidar dirs expected deeper in the archive — unverified
+- Label columns & units: VERIFIED by decompressing measurements/0027.json from inside ll.zip: x, y, theta, speed (4.06, m/s-scale), target_speed, x/y_command, command (int), waypoints x7, steer/throttle/brake as 3-element arrays (temporal context — exact convention unverified), junction flag, long vehicle_hazard bool array. CARLA normalized control units (-1..1 steer)
+- Speed included: yes — speed + target_speed per frame
+- Per-frame synced: yes (json index pairs with image index)
+- Download method: hf resolve URLs, ungated
+- Known problems: huge; zip-only (no parquet/viewer); 3-element label arrays' temporal semantics undocumented; expert driver = CARLA autopilot-style agent (unverified); no README content
+- Notes: largest verified-open CARLA leaderboard-format set after Bench2Drive; labels normalized, driver non-human.
+
+## TCP official CARLA dataset (HF mirror craigwu/tcp_carla_data)  [PARTIAL]  (task 7)
+- URL: https://huggingface.co/datasets/craigwu/tcp_carla_data ; linked as official download in https://github.com/OpenDriveLab/TCP README (verified — HF + Google Drive + BaiduYun mirrors; `cat tcp_carla_data_part_* > tcp_carla_data.zip`); paper arXiv 2206.08129 (NeurIPS 2022)
+- Maintainer: HF uploader craigwu; TCP authors Penghao Wu, Xiaosong Jia, Li Chen et al. (OpenDriveLab)
+- Date (created / last updated): HF upload 2024-08-06 (verified); dataset era ~2022, CARLA 0.9.10.1
+- License: none stated on HF (unverified); TCP code Apache-2.0
+- Size (frames / hours / GB): ~123 GB in 3 LFS split parts (42.95 + 42.95 + 37.5 GB — verified); README says ~115 GB uncompressed
+- Image resolution & camera view: CARLA leaderboard collection format (route dirs, rgb_* cameras, lidar, measurements) — contents unverified inside archives
+- Label columns & units: autopilot-expert records: steer normalized -1..1, throttle, brake, speed, target point, command (TCP/leaderboard schema; unverified inside)
+- Speed included: yes (expected)
+- Per-frame synced: yes (expected leaderboard format)
+- Download method: hf_hub_download; alternate Google Drive + BaiduYun links in the official README
+- Known problems: rule-based autopilot expert, not human; normalized labels; bulk-only download
+- Notes: officially released dataset of a NeurIPS 2022 CARLA agent — properly citable.
+
+## PDM-Lite CARLA Leaderboard 2.0 dataset (autonomousvision/PDM_Lite_Carla_LB2, Hugging Face)  [PARTIAL]  (task 7)
+- URL: https://huggingface.co/datasets/autonomousvision/PDM_Lite_Carla_LB2 ; docs+download script https://github.com/OpenDriveLab/DriveLM/tree/DriveLM-CARLA
+- Maintainer: OpenDriveLab + U Tübingen autonomousvision group (Jens Beißwenger et al.; Geiger lab)
+- Date (created / last updated): created 2024-09-13, lastModified 2024-11-25 (HF API verified); 1,107 downloads
+- License: Apache-2.0 (verified)
+- Size (frames / hours / GB): 581,662 frames / 5,134 routes / 8 towns / 38 scenario types, sampled at 4 Hz, ~160 m avg route length (verified README); HF size tag "100B<n<1T" — actual total bytes unverified; 124 files of TownNN/data/<Scenario>.zip + results.zip
+- Image resolution & camera view: RGB 1024x512 + semantic segmentation + depth + LiDAR (600k pts/s) + 512x512 BEV semantics + augmented variants; multi-camera surround set
+- Label columns & units: full simulator state + expert controls; used to train TransFuser++ by imitation learning — steer/throttle/brake in normalized CARLA units (field names unverified inside zips)
+- Speed included: yes (simulator state per frame)
+- Per-frame synced: yes (4 Hz sampling)
+- Download method: hf, ungated; helper script in DriveLM-CARLA repo
+- Known problems: PDM-Lite is a RULE-BASED expert, not human; scenario-style routes, not free lane-keeping laps; normalized labels
+- Notes: best-provenance CARLA frame+label set (used for DriveLM-Carla QA and the 2024 CARLA Challenge winners). Re-uploads exist: andreas122001/AD_pdm-lite_carla-lb2 (MIT) and AD_tfpp-expert_carla-lb2.
+
+## zahidbooni/alltownswithweather "CARLA Steering DataSet" (Kaggle)  [PARTIAL]  (task 7)
+- URL: https://www.kaggle.com/datasets/zahidbooni/alltownswithweather
+- Maintainer: zahidbooni
+- Date (created / last updated): created+updated 2021-09-03 (Kaggle API verified); 1,326 downloads
+- License: "Other (specified in description)" — but the description contains no license text, so effectively unlicensed
+- Size (frames / hours / GB): 11,893,256,549 bytes (~11.9 GB; Kaggle API verified); 86.5k files in 2 dirs incl. a "SteerValues" dir (file layout per page snippet; contents unverified)
+- Image resolution & camera view: CARLA screen captures from a Tesla Model 3 across 3 towns, multiple weathers and times of day; resolution and camera view unverified
+- Label columns & units: per-image "steering angle" values — almost certainly CARLA normalized steer -1..1 despite the "angle" name; units unverified
+- Speed included: no (not mentioned; unverified)
+- Per-frame synced: yes (image↔steer pairs)
+- Download method: public Kaggle download
+- Known problems: "angle" is a misnomer for the normalized axis; no speed; anonymous author; license unclear
+- Notes: most direct Kaggle CARLA frame+steer hit.
+
+## Princeton DeepDriving TORCS dataset (TORCS_trainset.zip + baseline_testset) — links DEAD  [PARTIAL]  (task 7)
+- URL: http://deepdriving.cs.princeton.edu/ (site live); zips at https://deepdriving.cs.princeton.edu/TORCS_trainset.zip and .../TORCS_baseline_testset.zip
+- Maintainer: Chenyi Chen, Ari Seff, Alain Kornhauser, Jianxiong Xiao — Princeton Vision Group (ICCV 2015 DeepDriving)
+- Date (created / last updated): 2015-2016 (DeepDrivingCode_v2.zip Last-Modified 2016-03-23 verified via HTTP header)
+- License: none stated — unverified
+- Size (frames / hours / GB): trainset 484,815 LevelDB entries ~50 GB; baseline testset ~8 GB; 12 hours of HUMAN driving in TORCS (verified on site + DeepTORCS docs)
+- Image resolution & camera view: in-game TORCS screenshots (paper era used ~280x210; storage resolution unverified); driver's forward view
+- Label columns & units: 14 affordance indicators (angle to track axis, distances to lane markings LL/ML/MM/RR, distance to lead cars L/M/R, lane-position markers), rescaled 0..1 — DIRECT-PERCEPTION labels, NOT a steering angle
+- Speed included: not as a label (unverified)
+- Per-frame synced: yes (leveldb entry = image + label vector)
+- Download method: DEAD — both dataset zips return HTTP 403 to HEAD AND ranged GET (verified 2026-10-03); only DeepDrivingCode_v2.zip (1.28 GB, patched TORCS + data generator) still serves
+- Known problems: labels aren't steering even if the files came back; leveldb format; no license
+- Notes: THE canonical TORCS driving dataset. Recreating equivalent data requires their released generator (modified TORCS + scr-bot recording). VladSkripniuk/DeepTORCS documents the schema and leveldb->tfrecords conversion.
+
+## eubrunomiguel/drl_rcc_torcs — racingdata.zip, Dropbox DEAD  [ADJACENT]  (task 7)
+- URL: https://github.com/eubrunomiguel/drl_rcc_torcs ; data https://www.dropbox.com/s/r7ln2y2plyezjy0/racingdata.zip?dl=0
+- Maintainer: eubrunomiguel (Bruno Miguel)
+- Date (created / last updated): ~2017 era; unverified
+- License: unverified
+- Size: unverified — link dead (Dropbox serves an error page, "Dropbox - Error" title verified 2026-10-03)
+- Label columns & units: README: images + steering angle collected while TORCS's "perfect" driver raced (AI, not human); schema unverified
+- Download method: n/a
+- Notes: another lost link; even alive it would have been AI-driver labels.
+
+## nimarb/torcs-autonomous-driving — processed_data npys (sensor logs only, no images)  [ADJACENT]  (task 7)
+- URL: https://github.com/nimarb/torcs-autonomous-driving (nengo_controller/data/processed_data/)
+- Maintainer: nimarb (ROS/nengo student project)
+- Date (created / last updated): unverified
+- License: unverified
+- Size (frames / hours / GB): 8 track npy pairs shipped in-repo; npy headers verified — e.g. alpine_1_input.npy shape (15279,6) f8, alpine_1_output.npy (15279,4) f8. The README's data-<track>-2laps-640x480 image dirs are NOT in the repo (86 files total, git tree verified)
+- Label columns & units: collect-training-data.py records img + "angle" + "distance from road centre" (track-relative pose sensors, NOT wheel angle); processed npys are the controller's in/out vectors — exact 6/4-column semantics unverified
+- Speed included: unverified
+- Download method: git clone
+- Known problems: no images shipped; labels are road-pose sensors, not steering
+- Notes: the only TORCS "data" files found in any GitHub repo — and they're imageless sensor vectors.
+
+## Zenodo 8191453 — UAI 2021 playstyle dataset incl. TORCS (no frames)  [ADJACENT]  (task 7)
+- URL: https://zenodo.org/records/8191453
+- Maintainer: authors of "An Unsupervised Video Game Playstyle Metric via State Discretization" (UAI 2021)
+- Date (created / last updated): published 2023-07-28 (Zenodo API verified)
+- License: CC-BY-4.0 (verified)
+- Size (frames / hours / GB): single playstyle_uai2021.zip = 10,443,087,401 B (~10.4 GB, verified) covering TORCS + RGSK + Atari
+- Label columns & units: training/testing trajectories + HSD models for a state-discretization playstyle metric — game STATE logs; no camera frames expected (zip contents unverified)
+- Notes: public TORCS driving logs exist here, but as state trajectories — not frame+steer. A TMLR-2024 follow-up record (Zenodo 13439971) is the same family.
+
+## LAV dataset (Learning from All Vehicles, CVPR 2022) — Box link DEAD  [PARTIAL]  (task 7)
+- URL: https://github.com/dotchen/LAV ; data https://utexas.box.com/s/evo96v5md4r8nooma3z17kcnfjzp2wed
+- Maintainer: Dian Chen, Philipp Krähenbühl (UT Austin)
+- Date (created / last updated): 2022
+- License: Apache-2.0 (repo); data license unverified
+- Size: unverified — download DEAD (box.com returns 404, verified 2026-10-03)
+- Label columns & units: LAV collector format (data-collect branch): multi-camera + LiDAR + privileged BEV/trajectory data + ego controls from CARLA autopilot-style runs; normalized units; details unverified since data is gone
+- Known problems: release link dead; collection scripts in the repo's data-collect branch still work if regeneration were ever wanted
+- Notes: recorded to document the dead release.
+
+## Task 7 summary note
+TORCS: no public TORCS frame+steering dataset exists. The canonical Princeton DeepDriving set (484,815 human-driven frames, 12 h) (a) uses 14 affordance-indicator labels, not steering, and (b) is verified 403-dead anyway — only the generator code zip survives. All GitHub TORCS projects are collect-your-own (ugo-nama-kun/gym_torcs, zsdonghao/avisingh599 DAGGER demos, ~20 repo search hits); both known data links (Princeton zips, eubrunomiguel Dropbox) are dead; the only shipped data files are nimarb's imageless sensor npys and Zenodo's frame-less state trajectories.
+CARLA: the richest sim by far. Verified downloadable frame+steer sets — all with normalized -1..1 steer, never wheel degrees: CIL/CoRL-2017 official set (24 GB, ~14 h HUMAN driving, 200x88 front RGB, HDF5 targets incl. steer/gas/brake/speed — Drive link still live); roboticslaburjc CARLA_e2e_autonomous_driving (~163 GB Apache-2.0, PNG+data.csv per run, verified csv header image_name,throttle,steer — includes human "wheel" captures + manual/DAgger/noise variants; closest format match to ours anywhere); Bench2Drive (Apache-2.0, 2M frames/13,638 clips, 1600x900 multicam+LiDAR, Think2Drive RL expert); PDM-Lite LB2 (Apache-2.0, 581k frames, rule-based expert, richest annotation); TCP official (~123 GB, autopilot expert); mmahdavi/carla_1.8m (~247 GB MIT, verified per-frame measurements.json with steer/throttle/brake/speed m/s + waypoints, autopilot-style); Kaggle zahidbooni (11.9 GB images+SteerValues, units unverified); URJC CarlaFollowLanePreviousV (~57.6k, BEV+autopilot+previous-speed). Dead: LAV Box link. Wrong-task CARLA sets (perception/VQA/IMU): Brusnicki 60k VQA, collabora/carla-nuscenes, DAVID semantic seg, georgiossavvidis detection, dasmehdixtr IMU-only, angeldsappa CARLA-Haze, thomasfermi lane detection, sergiopaniego/Jianbiao small sets.
+LABEL-UNIT WARNING for every CARLA hit: steer is the -1..1 game-axis value (same class of signal as our tele_steer s8), not wheel degrees — any CARLA-derived pretraining would need relabeling semantics or output-scaling to our -450..+450 deg target.
