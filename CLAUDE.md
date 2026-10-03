@@ -1,5 +1,10 @@
 # Forza AI Wheel: project context
 
+Current implementation and deployment status are in `docs/PLAN.md` and
+`docs/TWO_PC_SETUP.md`; those documents supersede the original setup milestones
+below. Both training and inference now target DESKTOP-0HR4O88 over LAN, while
+Forza, capture, pedals, and physical wheel control run on a different Windows PC.
+
 Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (Steam)** by physically turning a **Thrustmaster TMX** force-feedback wheel. The human keeps the pedals and can grab the wheel to override at any time.
 
 ## Architecture (decided)
@@ -7,9 +12,9 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 - **Body:** PID loop turns the target angle into motor torque via force feedback. The game only ever sees the wheel angle.
 - **vJoy passthrough:** Forza is bound only to the virtual vJoy wheel. Our Python script:
   1. reads the real TMX (PySDL2) and writes steering/pedals to vJoy (pyvjoyffb),
-  2. receives Forza's FFB from vJoy and forwards it, plus the AI torque, to the TMX motor (capped, with a kill switch).
+  2. drives the TMX motor toward AI targets with capped torque and takeover. Receiving/replaying Forza's own road forces and blending them is a later feature.
 - **HidHide** hides the TMX from everything except python.exe, so Forza only sees vJoy.
-- Inference runs on CPU during live driving so Forza keeps the GPU (GTX 1650, 4 GB). Training on GPU, possibly on the laptop (RTX 3050).
+- Inference runs on the separate desktop; the game PC sends authenticated road crops/speed and keeps the physical control loop local. Training also targets the desktop GPU after verifying its CUDA setup.
 
 ## Machine
 - Project folder: `C:\Users\Administrator\ForzaTest`, venv `.venv` (Python 3.12).
@@ -38,14 +43,15 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 - Data Out ON, `127.0.0.1:9999`. Packets are 324 bytes (FH4 "dash" layout), ~60/s while driving.
 - Offsets used in check.py: IsRaceOn int @0, CurrentEngineRpm float @16, Speed float m/s @256, Steer s8 @320. **Speed/steer offsets not yet verified while driving.**
 
-## Data collection plan
+## Original data collection plan (see current contracts before use)
 - Solo circuit (Rivals/time attack, ghost off if possible), one mid-range B/A-class car, automatic gears, bonnet camera, HUD off, racing line off, lens effects off.
 - One loop iteration = frame + wheel + latest telemetry + one timestamp. Crop sky/bonnet, resize ~200×66. Shift labels ~100–200 ms later (tune). Check frame-gap histogram before long recordings. Balance near-straight frames.
 - 1–2 h base laps → train → DAgger rounds (AI drives, human corrects) → test on an unseen circuit.
 
 ## Status / next
-- DONE: Python/VS Code, TMX calibration, FFB test, vJoy + registry flag, Forza wheel layout, Forza FFB reaches vJoy, telemetry packets arrive, HidHide installed with both python.exe paths allowed.
-- NEXT: tick TMX in HidHide Devices + enable hiding + replug; verify telemetry values while driving; write the passthrough script (TMX → vJoy, Forza constant force → TMX motor, sign to calibrate); then the recorder.
+- Hardware history: Python/VS Code, TMX calibration, FFB test, vJoy + registry flag, Forza wheel layout, Forza FFB reaches vJoy, telemetry packets arrive, HidHide installed with both python.exe paths allowed.
+- Implemented in this repo: offline training/export, actual-recorder import, live crop/mask preprocessing, local PD wheel control, takeover/expiry, LAN inference, foreground checks, telemetry, and simulated/loopback tests. `record.py` is the incoming recorder; its original behavior is preserved.
+- NEXT: user runs the stationary wheel sweep and two-PC fixed-target tests; transfer completed real recordings for training. Physical/native driver behavior and actual LAN/GPU execution remain unverified. Forza game-force replay/blending is a later feature; the current adapter commands only its own steering effect.
 
 ## Working rules
 - Test FFB with no game, and vJoy passthrough with no AI. Never debug both at once.

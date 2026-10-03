@@ -154,6 +154,23 @@ Transfer completed sessions to the desktop. Follow [TRAINING.md](TRAINING.md),
 using local dataset/checkpoint paths and `--device cuda` after verifying CUDA.
 Train/validation sessions remain separate. Export the selected checkpoint.
 
+For the incoming `record.py`, copy each complete `data/recordings/TIMESTAMP/`
+directory (JPEGs, `labels.csv`, and `meta.json`) to the desktop, then import it:
+
+```powershell
+forza-train import-recording SOURCE_RECORDING data/completed/recording-001 --expert-mode manual
+forza-train import-recording SECOND_RECORDING data/completed/recording-002 --expert-mode manual
+forza-train validate data/completed
+forza-train train data/completed runs/baseline-001 --epochs 10 --device cuda
+forza-train export runs/baseline-001/best.pt runs/baseline-001/export-best
+```
+
+Use at least two separate recordings. Pause segments from one recording stay in
+one split group. The importer preserves the source JPEG/CSV bytes and recorded
+per-frame labels; it cannot recover certified capture times from rounded elapsed
+times and ages. These imports support only zero label offset. Their timing
+limitations are carried into validation reports and model exports.
+
 ```powershell
 python -m forza_ai.inference_server --bind DESKTOP_LAN_IP --model PATH_TO_EXPORTED_MODEL
 ```

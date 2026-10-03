@@ -1,4 +1,7 @@
-# Shared contracts, version 1
+# Shared contracts
+
+The stream-based format below is version 1. The incoming `record.py` uses a
+separate explicitly imported aligned format, documented at the end of this file.
 
 ## Units and time
 
@@ -42,3 +45,30 @@ An exported artifact must contain model weights and enough metadata to reconstru
 The wheel loop forwards measured physical inputs in every active control mode. It never forwards the policy target directly as the game's steering input. Only the local controller writes motor torque. A logical positive torque means physical right; the TMX adapter translates that to SDL's measured negative force level. vJoy X steering is low-left/high-right; Y brake and Z throttle are inverted (32768 released, 1 pressed).
 
 Assistance is explicit and continuous once engaged. A test placeholder emits deterministic targets only and is clearly identified as not a driving model. `manual`/`takeover` suppress AI torque. Effects should expire without host refresh, providing a bound when the process stalls; cleanup alone cannot handle a hard process failure.
+
+## Incoming recorder compatibility
+
+`record.py` writes `meta.json`, `labels.csv`, and `frames/*.jpg`. Use
+`forza-train import-recording SOURCE DEST --expert-mode manual` on completed
+human demonstrations. The imported schema is `record_py_aligned_v1`: original
+CSV/JPEG bytes are retained with a provenance manifest. Rounded retrieval times
+are not treated as certified capture timestamps, and cached frames remain
+possible. Only zero label offset is supported; no interpolation or fabricated
+high-frequency streams are introduced. Age bounds include rounding uncertainty.
+The whole source recording is one split group, including all pause segments.
+
+For live input from this recorder's model, `--capture-config config/capture.json`
+applies the same monitor, crop, masks, saved width/even height, and OpenCV
+`INTER_AREA` resize before the model's exported preprocessing. Live RGB arrays
+correspond to decoded recording image color order; JPEG compression artifacts
+are not simulated.
+
+## LAN inference boundary
+
+The game PC owns capture and wheel clocks. It sends a lossless PNG road crop,
+speed, frame ID, and authenticated request/session/nonce identifiers to the
+desktop. The desktop returns the corresponding angle in degrees. The game PC
+retains the source capture timestamp and enforces command expiry locally; remote
+monotonic timestamps are neither transmitted nor compared. There is one in-flight
+request and bounded I/O. HMAC authenticates messages but does not encrypt images.
+The physical controller and measured-axis forwarding remain on the game PC.
