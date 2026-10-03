@@ -175,3 +175,38 @@ def test_manual_mode_is_required(tmp_path):
     with pytest.raises(SystemExit) as error:
         main(['import-recording', str(source), str(tmp_path / 'dest')])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize('prefix', ['', 'imported-session/'])
+def test_colab_archive_accepts_imported_recording_and_validates(tmp_path, prefix):
+    import runpy
+    import zipfile
+
+    helpers = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts/colab_archives.py'))
+    source = recording(tmp_path / 'source')
+    imported = tmp_path / 'imported'
+    original = import_recording(source, imported, expert_mode='manual')
+
+    def archive_import():
+        archive = tmp_path / 'recording.zip'
+        with zipfile.ZipFile(archive, 'w') as output:
+            for path in imported.rglob('*'):
+                if path.is_file():
+                    output.write(path, prefix + path.relative_to(imported).as_posix())
+        return archive
+
+    summaries = helpers['extract_sessions']([archive_import()], tmp_path / 'extracted')
+    assert summaries == [original]
+    # A valid directory shape is insufficient: canonical loader still checks provenance.
+    manifest = imported / 'metadata.json'
+    metadata = json.loads(manifest.read_text())
+    metadata['expert_mode'] = 'assist'
+    manifest.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='provenance'):
+        helpers['extract_sessions']([archive_import()], tmp_path / 'invalid')
+    assert not (tmp_path / 'invalid').exists()
+    metadata['schema_version'] = 'unknown_format'
+    manifest.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='unsupported session schema'):
+        helpers['extract_sessions']([archive_import()], tmp_path / 'unsupported')
+    assert not (tmp_path / 'unsupported').exists()
