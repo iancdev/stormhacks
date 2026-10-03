@@ -228,8 +228,15 @@ class WheelReader(threading.Thread):
         try:
             self._run()
         except Exception as e:  # report to the main thread instead of dying silently
-            self.error = repr(e)
-            self.ready.set()
+            self._fail(repr(e))
+
+    def _fail(self, message):
+        # Publish the failure before clearing samples so the capture thread can
+        # report the actual cause even when detach races with its cached read.
+        self.error = message
+        self.live = False
+        self.latest = self.latest_ns = None
+        self.ready.set()
 
     def _run(self):
         import sdl2
@@ -239,6 +246,13 @@ class WheelReader(threading.Thread):
         js, j = None, None
         def to_vjoy(raw):  # -32768..32767 -> 0x1..0x8000 (pedals stay inverted, like the TMX)
             return 1 + (raw + 32768) * 0x7FFF // 65535
+
+        def require_attached():
+            if not sdl2.SDL_JoystickGetAttached(js):
+                # Invalidate immediately, before potentially slow vJoy/SDL
+                # cleanup. Detached handles may still expose cached axis values.
+                self._fail("TMX disconnected")
+                raise RuntimeError("TMX disconnected")
 
         first, moved = None, [False, False, False]
         try:
@@ -256,10 +270,12 @@ class WheelReader(threading.Thread):
                 for k, v in VJOY_REST.items():
                     j.set_axis(axes[k], v)
             while not self.stop.is_set():
+                require_attached()
                 sdl2.SDL_JoystickUpdate()
                 steer = sdl2.SDL_JoystickGetAxis(js, 0)
                 brake = sdl2.SDL_JoystickGetAxis(js, 1)
                 gas = sdl2.SDL_JoystickGetAxis(js, 2)
+                require_attached()
                 sampled_ns = time.perf_counter_ns()
                 self.latest_ns = (sampled_ns, steer, brake, gas)
                 self.latest = (sampled_ns / 1e9, steer, brake, gas)
@@ -534,6 +550,8 @@ def cmd_record(args):
             img, capture_ns, retrieved_ns = capture.grab()
             t = retrieved_ns / 1e9  # Still post-retrieval time, never relabelled as capture start.
             ws = wheel.latest_ns
+            if wheel.error or ws is None:
+                raise RuntimeError("Wheel thread died: " + (wheel.error or "wheel sample unavailable"))
             wt_ns, steer, brake_raw, gas_raw = ws
             tl = tele.latest_ns if tele else None
             tele_fresh = tl is not None and 0 <= retrieved_ns - tl[0] < 500_000_000
