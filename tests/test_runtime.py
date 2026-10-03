@@ -3,7 +3,7 @@ import time
 import unittest
 
 from forza_ai.contracts import WheelState
-from forza_ai.policies.placeholder import FixedAnglePolicy, TestObservation
+from forza_ai.policies.placeholder import FixedAnglePolicy, TestObservation as PlaceholderObservation
 from forza_ai.runtime import PolicyWorker, run
 from forza_ai.simulation import SimulatedAdapter
 
@@ -71,7 +71,7 @@ class RuntimeTests(unittest.TestCase):
     def test_worker_retains_source_timestamp(self):
         worker = PolicyWorker(FixedAnglePolicy())
         source = time.monotonic_ns() - 300_000_000
-        worker.publish(TestObservation(WheelState(source, 0, 0, 0)))
+        worker.publish(PlaceholderObservation(WheelState(source, 0, 0, 0)))
         worker.start()
         try:
             end = time.monotonic() + 0.5

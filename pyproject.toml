@@ -15,9 +15,9 @@ test = ["pytest>=8"]
 hardware = [
   "comtypes; sys_platform == 'win32'",
   "dxcam; sys_platform == 'win32'",
-  "PySDL2; sys_platform == 'win32'",
-  "pysdl2-dll; sys_platform == 'win32'",
-  "pyvjoyffb; sys_platform == 'win32'",
+  "PySDL2==0.9.17; sys_platform == 'win32'",
+  "pysdl2-dll==2.32.10; sys_platform == 'win32'",
+  "pyvjoyffb==0.4; sys_platform == 'win32'",
 ]
 
 [project.scripts]

@@ -52,6 +52,14 @@ The gaming PC records frames, wheel inputs, telemetry, and control mode into com
 
 - Private repository created and pushed: `iancdev/stormhacks`.
 - Hardware diagnostic and pinned Windows dependencies received in commit `d18ec40`.
-- Training work dispatched to the designated chat; implementation in progress.
+- Training work delivered by the designated chat and integrated through `02ba588`: session validation/alignment, image-plus-speed CNN, resumable CLI, metrics/baselines, CPU export/predictor, executable Colab ZIP setup, and synthetic notebook smoke. Real data and actual GPU/Colab execution remain outstanding.
 - Adapter software now includes a PD controller, explicit engagement/takeover, command expiry, separate placeholder policy worker, simulated wheel, and a timestamped FH4 receiver. The first simulated three-second run reached a five-degree target while forwarding measured angles. Physical Windows acceptance is still outstanding; see [ADAPTER.md](ADAPTER.md).
 - The supplied baseline reference is NVIDIA's [End to End Learning for Self-Driving Cars](https://arxiv.org/abs/1604.07316). The training chat is incorporating the paper with explicit documentation of our speed input and physical-angle output differences.
+
+## Next integration gates
+
+1. Finish checkpoint interruption recovery review and merge the final training fix.
+2. Obtain the existing recorder/sample schema and adapt it to version 1. Sessions require `completed: true` once fully written/transferred; preserve source timestamps and separate human corrections from AI motion.
+3. User runs the notebook synthetic path on Colab, then supplies completed real sessions for GPU training. No real training is scheduled or started automatically.
+4. User runs the Windows acceptance procedure for passthrough, +/-5-degree stationary tracking, takeover, expiry, and cleanup. Tune PD gains only against observed hardware behavior.
+5. Connect real capture plus `SteeringPredictor` to the runtime in shadow mode, preserving the frame's capture time through inference. Road-force replay remains a later independent increment.
