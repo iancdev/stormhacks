@@ -47,6 +47,7 @@ The tested hardware diagnostic is in `utils/test.py`, and the incoming recorder 
 - [Training, dataset transfer, and inference](docs/TRAINING.md)
 - [Colab notebook](notebooks/train_colab.ipynb)
 - [Primary two-PC setup: desktop training/inference and game/wheel control](docs/TWO_PC_SETUP.md)
+- [Driving analytics on Tiger Data](docs/ANALYTICS.md)
 
 ## Start training development
 

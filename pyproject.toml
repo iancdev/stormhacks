@@ -12,6 +12,7 @@ dependencies = ["numpy>=1.24", "Pillow>=10"]
 [project.optional-dependencies]
 training = ["torch>=2.2"]
 test = ["pytest>=8", "opencv-python>=4.10"]
+analytics = ["psycopg[binary]>=3.1"]
 hardware = [
   "comtypes; sys_platform == 'win32'",
   "dxcam==0.3.0; sys_platform == 'win32'",
@@ -23,6 +24,7 @@ hardware = [
 
 [project.scripts]
 forza-train = "forza_ai.training.cli:main"
+forza-analytics = "forza_ai.analytics.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
