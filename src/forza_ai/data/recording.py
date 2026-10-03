@@ -63,7 +63,7 @@ def _read_source(path):
     segments = _integer(metadata.get('segments'), 'segments')
     if count == 0 or segments == 0:
         raise ValueError('recording must contain frames and segments')
-    _integer(metadata.get('dropped'), 'dropped')
+    dropped = _integer(metadata.get('dropped'), 'dropped')
     if _decimal(metadata.get('fps_target'), 'fps_target') <= 0:
         raise ValueError('fps_target must be positive')
     config = metadata.get('config', {})
@@ -96,6 +96,7 @@ def _read_source(path):
     if actual_images != expected_images:
         raise ValueError('missing or extra frame files; cannot infer completed recording')
     previous_t, previous_segment = Decimal('-1'), -1
+    observed_segments = set()
     for index, row in enumerate(rows):
         if None in row or any(value is None for value in row.values()):
             raise ValueError('malformed labels.csv row')
@@ -106,6 +107,7 @@ def _read_source(path):
         if time < 0 or time < previous_t or segment < previous_segment or segment >= segments:
             raise ValueError('time/segment ordering inconsistent with recorder')
         previous_t, previous_segment = time, segment
+        observed_segments.add(segment)
         # Equal rounded times are legitimate: retain their precision and exclude
         # duplicate times later, never synthesize strictly increasing nanoseconds.
         raw = _decimal(row['steer_raw'], 'steer_raw')
@@ -132,8 +134,12 @@ def _read_source(path):
             if image.format != 'JPEG' or list(image.size) != size:
                 raise ValueError('frame format/dimensions differ from meta.json')
             image.convert('RGB').load()
-    if previous_segment != segments - 1:
-        raise ValueError('meta.json segment count does not match recorded rows')
+    # record.py opens a segment before queue.put_nowait. A segment with only
+    # dropped frames can be absent anywhere, including after the last saved row.
+    # Every such segment requires at least one recorded queue.Full drop.
+    empty_segments = segments - len(observed_segments)
+    if empty_segments > dropped:
+        raise ValueError('meta.json empty segments exceed dropped-frame evidence')
     return metadata, rows
 
 
