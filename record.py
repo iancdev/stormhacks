@@ -10,7 +10,7 @@ Run from the activated venv, in this order:
 Options:
     setup/preview --image PATH          # use a saved screenshot instead of grabbing the screen
     setup/preview --delay N             # seconds to alt-tab into Forza before the grab (default 5)
-    record --fps N                      # fresh capture target (default 60, measured rate reported)
+    record --fps N                      # fresh capture target (default 30, measured rate reported)
     record --vjoy                       # also pass TMX steering/pedals through to vJoy (no FFB)
     record --no-telemetry               # record even without Forza Data Out (no speed, no pause)
 
@@ -661,7 +661,7 @@ def argument_parser():
         sp.add_argument("--image", help="use a saved screenshot instead of grabbing the screen")
         sp.add_argument("--delay", type=int, default=5, help="seconds before the screen grab")
     rp = sub.add_parser("record")
-    rp.add_argument("--fps", type=capture_fps, default=60.0, help="fresh-frame target, 0 < fps <= 240 (default 60)")
+    rp.add_argument("--fps", type=capture_fps, default=30.0, help="fresh-frame target, 0 < fps <= 240 (default 30)")
     rp.add_argument("--quality", type=int, default=90, help="JPEG quality")
     rp.add_argument("--vjoy", action="store_true", help="pass TMX steering/pedals through to vJoy")
     rp.add_argument("--no-telemetry", action="store_true")

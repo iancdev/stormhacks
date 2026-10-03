@@ -110,8 +110,9 @@ def install_hardware_mocks(record, monkeypatch, tmp_path, frames, *, active=True
     return clock, camera, instances
 
 
-def test_default_sixty_and_fps_validation(record):
-    assert record.argument_parser().parse_args(["record"]).fps == 60
+def test_default_thirty_and_fps_validation(record):
+    assert record.argument_parser().parse_args(["record"]).fps == 30
+    assert record.argument_parser().parse_args(["record", "--fps", "60"]).fps == 60
     assert record.argument_parser().parse_args(["record", "--fps", "59.94"]).fps == 59.94
     for value in ["nan", "inf", "-1", "0", "241", "bad"]:
         with pytest.raises(SystemExit):
@@ -172,10 +173,12 @@ def test_measured_fps_and_gaps_use_fresh_and_saved_frames(record):
     assert report["dropped_queue_frames"] == 1
 
 
-def test_recording_keeps_legacy_columns_and_imports_without_cached_frames(record, monkeypatch, tmp_path):
+@pytest.mark.parametrize("requested_fps", [None, 60])
+def test_recording_keeps_legacy_columns_and_imports_without_cached_frames(record, monkeypatch, tmp_path, requested_fps):
     clock, camera, readers = install_hardware_mocks(
         record, monkeypatch, tmp_path, [image(40), None, image(80), None, image(120)])
-    record.main(["record"])
+    target_fps = 30 if requested_fps is None else requested_fps
+    record.main(["record"] + ([] if requested_fps is None else ["--fps", str(requested_fps)]))
     session = next((tmp_path / "recordings").iterdir())
     labels = read_csv(session / "labels.csv")
     timing = read_csv(session / "capture_timing.csv")
@@ -190,13 +193,13 @@ def test_recording_keeps_legacy_columns_and_imports_without_cached_frames(record
     assert labels[0]["t"] == "0.0010"  # Retrieval, not capture-start t=0.
     assert labels[0]["wheel_age_ms"] == "2.0"
     assert labels[0]["tele_age_ms"] == "3.0"
-    assert metadata["fps_target"] == 60
+    assert metadata["fps_target"] == target_fps
     assert metadata["completed"] is True
     assert metadata["capture_provenance"]["cached_frames_reused"] is False
     assert metadata["measured_capture"]["no_new_frame_polls"] == 2
     assert metadata["measured_capture"]["fresh_frames"] == 3
-    assert metadata["measured_capture"]["captured_fps"] < 60
-    assert metadata["measured_capture"]["fresh_capture_gaps"]["median_ms"] == 33.3
+    assert metadata["measured_capture"]["captured_fps"] < target_fps
+    assert metadata["measured_capture"]["fresh_capture_gaps"]["median_ms"] == round(2000 / target_fps, 1)
     assert camera.released and all(reader.joined for reader in readers)
     assert len(clock.sleeps) == 5
     from forza_ai.data.recording import import_recording
@@ -224,7 +227,7 @@ def test_same_crop_masks_and_label_scaling(record):
 
 def test_pause_during_no_frame_poll_still_starts_a_new_segment(record, monkeypatch, tmp_path):
     install_hardware_mocks(record, monkeypatch, tmp_path, [image(40), None, image(80)],
-                           active=lambda now: not 1_010_000_000 < now < 1_030_000_000)
+                           active=lambda now: not 1_020_000_000 < now < 1_050_000_000)
     record.main(["record"])
     session = next((tmp_path / "recordings").iterdir())
     labels = read_csv(session / "labels.csv")
