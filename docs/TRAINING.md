@@ -230,9 +230,9 @@ by the synthetic import tests.
 
 A normally closed recorder can report empty segments: it increments the segment
 before enqueueing a frame, and `queue.Full` can drop every frame in that segment,
-including a final resumed segment. Import accepts absent segment IDs only when
-the recorded `dropped` count supplies at least one dropped frame per empty
-segment. Segment IDs must still be ordered and within the declared count. This
+including a final resumed segment. For the original unbuffered schema, absent segment IDs need recorded queue
+drops, subject to the narrow Ctrl+C exception below. Buffered producers use
+their explicit discard counters as described below. Segment IDs must still be ordered and within the declared count. This
 check admits that recorder behavior without inventing samples or accepting an
 unexplained mismatch in completion metadata.
 
@@ -249,46 +249,64 @@ recorded drops. Later/extended producer metadata does not receive this exception
 its segment semantics must be established from its source. Accepted legacy
 imports report the Ctrl+C caveat in `empty_segment_evidence`.
 
-The supplied `smoke_20261003_152944.zip` (13,689,689 bytes; SHA-256
+### Buffered recorder variants (merged source 26f0970)
+
+The producer lineage is now available: `2c4c81e` discards pending frames on stop,
+`0bb45a1` adds yaw/game-clock fields, `82c2e46` adds gear/HUD patches, `4fdefa7`
+adds game-takeover filtering, and `0117f25` adds car identity fields. Strict import
+supports their exact ordered column families, including the sample's 17 columns
+and the merged recorder's 20 columns. This establishes schema semantics, not the
+exact binary/source revision executed for an archive without a recorded hash.
+
+`frames` counts saved rows. Frame IDs count captured entries before pending-buffer
+discards and can have gaps; filenames must exactly match the retained row IDs.
+Those gaps need enough queue-drop or rewind/takeover discard evidence. Stop
+discards cannot explain an earlier frame-ID gap. Opened segments can contain no
+saved rows when their pending frames are discarded. Missing segments must be
+accounted for by the same loss counters without spending a counter twice for
+both earlier missing IDs and a later empty segment. `discarded_at_stop` is a
+**frame count**; `drop_seconds` is a **buffer duration**, not that count.
+Optional `accepted_frame_count` must reconcile with saved rows plus all losses;
+older archives do not need this newer field. Explicit `completed: false`, missing
+images, malformed data, contradictory counters and unknown schemas still fail.
+
+Extra telemetry is preserved in the original CSV, checked for finite/type-correct
+values, and excluded from model inputs. No distance rescaling or car-normalization
+is inferred. Optional `hud/*.png` patches are auxiliary sync diagnostics: an
+archive may omit them entirely, or contain a subset; present patches are validated,
+copied, and fingerprinted. They are never used as road images. Optional
+`capture_timing.csv` is preserved and must cover the saved row IDs. If source
+metadata advertises that sidecar, it must exist. It is not silently promoted to
+certified capture time: training continues to use zero-offset aligned labels and
+conservative rounded-age bounds. New completed/jpeg_quality/measured_capture/
+capture_provenance metadata remains intact in `source_metadata`.
+
+The unchanged `smoke_20261003_152944.zip` (13,689,689 bytes, SHA-256
 `7829b5458609202f8ddd970ed0d789800a1347e775cbb0360234a10f214fbaeb`)
-is **not that exact tracked producer format**. It has extra `race_time`, `distance`,
-`yaw_rate`, `game_ms`, and `gear` columns, plus metadata such as
-`discarded_at_stop=5`, `drop_seconds`, and rewind counters. Its corresponding
-producer source is absent from the inspected Git history. It remains rejected by
-strict import; neither the original Ctrl+C possibility nor the discard counter
-proves the semantics of its empty final segment. Those extra telemetry fields are
-not model inputs and their units are not inferred or rescaled.
+now passes strict import with **1,988 accepted rows and 9 rounded-age exclusions**.
+It declares two opened segments, one saved segment, no queue drops or rewinds,
+and five discarded-at-stop frames; the source-backed buffering rules account for
+that case. Original source bytes are preserved. This remains one independent
+parent recording; normal training still requires at least two groups. No GPU
+compute, held-out driving result, or model readiness follows from import success.
 
-A separate read-only API permits explicitly diagnostic offline work on that
-unchanged source. It tolerates only those named additive columns and unexplained
-empty-segment counts, records the discrepancies, and continues to enforce image
-integrity, row counts/order/ranges, calibration, and rounded-age eligibility:
-
-```python
-from forza_ai.data.recording import inspect_recording_for_diagnostics
-from forza_ai.data.dataset import SteeringDataset
-from forza_ai.policies.steering_model import Preprocessing
-
-session = inspect_recording_for_diagnostics(
-    r"C:\path\to\unchanged\raw", expert_mode="manual"
-)
-print(session.summary())
-assert session.provenance["diagnostic_only"]
-assert not session.provenance["production_validation_passed"]
-dataset = SteeringDataset([session], Preprocessing())
-# A separately bounded offline runner may now consume dataset batches.
-# This API itself performs no training and writes no session/metadata files.
+```bash
+forza-train import-recording SOURCE DEST --expert-mode manual --exclude-sessions config/exclude_sessions.txt
+forza-train validate DATASET
 ```
 
-The exact sample inspection found 1,988 eligible rows and 9 excluded for ambiguous
-or future rounded ages, with both strict-validation issues retained in provenance.
-The session cannot enter `split_sessions`, and normal `train`, resume, evaluation,
-and the two-independent-group requirement are unchanged. The Windows smoke runner
-must label checkpoints/exports **diagnostic-only**, retain this provenance and
-strict failure report, and report no held-out score or driving-quality claim.
-Do not manufacture an engine checkpoint with fake validation history to use its
-normal exporter; save/reload the diagnostic weights and normalization explicitly
-in the isolated runner. Such artifacts must not be deployed for wheel control.
-Obtaining the actual extended recorder source is necessary before establishing a
-production import rule for this recording. This inspection did not run any CPU
-or GPU training, hardware, or live inference.
+Exclusion rules are **explicit**, not automatically loaded from the current
+working directory. `--exclude-sessions PATH` reads nonempty session-ID prefixes,
+ignores `#` comments, rejects matching parents before writing, and records the
+checked prefixes in the imported manifest. Renaming a folder does not change the
+source session ID. The repository's `config/exclude_sessions.txt` is an operator
+policy; use this option when preparing the training dataset. It is not a global
+retroactive training filter: previously imported excluded sessions must be kept
+out of that dataset. No original recordings are deleted.
+
+`inspect_recording_for_diagnostics(source, expert_mode="manual")` remains an
+explicit read-only fallback for unresolved producer variants. Its results always
+carry `diagnostic_only: true`, cannot enter production splitting, and must not be
+used to manufacture held-out metrics or deployment artifacts. The now-supported
+sample no longer needs that fallback for import; its bounded one-recording GPU
+smoke remains separate from normal multi-group training.

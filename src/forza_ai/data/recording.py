@@ -19,6 +19,58 @@ LEGACY_METADATA_KEYS = {'session', 'config', 'saved_size', 'fps_target', 'frames
                         'pedals', 'gaps'}
 DIAGNOSTIC_EXTRA_COLUMNS = {'race_time', 'distance', 'yaw_rate', 'game_ms', 'gear'}
 
+EXTENDED_SUFFIXES = [
+    ['race_time', 'distance'],
+    ['race_time', 'distance', 'yaw_rate', 'game_ms'],
+    ['race_time', 'distance', 'yaw_rate', 'game_ms', 'gear'],
+    ['race_time', 'distance', 'yaw_rate', 'game_ms', 'gear', 'car_ordinal', 'car_class', 'car_pi'],
+]
+
+
+def _buffer_profile(metadata, columns):
+    """Recognize source-backed buffering variants, never infer counters from gaps."""
+    if columns not in [COLUMNS + suffix for suffix in EXTENDED_SUFFIXES]:
+        return None
+    common = {'rewinds', 'discarded_at_stop', 'drop_seconds', 'rewind_button'}
+    old = 'discarded_by_rewind' in metadata
+    new = {'discarded_by_rewind_or_takeover', 'takeovers'} <= metadata.keys()
+    if (not common <= metadata.keys() or old == new
+            or ('car_pi' in columns and not new)):
+        return None
+    rewinds = _integer(metadata['rewinds'], 'rewinds')
+    takeovers = _integer(metadata['takeovers'], 'takeovers') if new else 0
+    key = 'discarded_by_rewind_or_takeover' if new else 'discarded_by_rewind'
+    discarded = _integer(metadata[key], key)
+    stopped = _integer(metadata['discarded_at_stop'], 'discarded_at_stop')
+    if discarded and not rewinds + takeovers:
+        raise ValueError('discarded frames require a rewind/takeover event')
+    if _decimal(metadata['drop_seconds'], 'drop_seconds') < 0:
+        raise ValueError('drop_seconds must be nonnegative')
+    if metadata['rewind_button'] is not None:
+        _integer(metadata['rewind_button'], 'rewind_button')
+    return {'discarded': discarded, 'stopped': stopped,
+            'family': 'buffered_takeover' if new else 'buffered_rewind',
+            'source_reference': '0117f25' if 'car_pi' in columns else '82c2e46 / 0bb45a1 / 2c4c81e'}
+
+
+def _auxiliary_files(path):
+    files = []
+    timing = path / 'capture_timing.csv'
+    if timing.is_symlink():
+        raise ValueError('timing sidecar symlinks are forbidden')
+    if timing.exists():
+        if not timing.is_file():
+            raise ValueError('timing sidecar must be a file')
+        files.append(timing)
+    hud = path / 'hud'
+    if hud.is_symlink():
+        raise ValueError('HUD directory symlinks are forbidden')
+    if hud.exists():
+        if not hud.is_dir():
+            raise ValueError('HUD must be a directory')
+        files.extend(sorted(hud.iterdir()))
+    return files
+
 TIMING = {
     'timestamp_meaning': 'relative perf_counter at get_latest_frame return, not capture',
     'time_resolution_ns': 100_000,
@@ -57,6 +109,8 @@ def _read_source(path, *, diagnostic_issues=None):
         if entry.is_symlink() or not entry.exists():
             raise ValueError(f'{name} missing or symlinked; recording must be normally closed')
     metadata = json.loads((path / 'meta.json').read_text())
+    if metadata.get('completed') is False:
+        raise ValueError('source explicitly marks recording incomplete')
     if metadata.get('telemetry') is not True:
         raise ValueError('--no-telemetry recordings cannot train an image+speed model')
     session = metadata.get('session')
@@ -91,8 +145,9 @@ def _read_source(path, *, diagnostic_issues=None):
         raise ValueError('saved_size does not match recorder crop/save_width calculation')
     with (path / 'labels.csv').open(newline='') as handle:
         reader = csv.DictReader(handle)
-        if reader.fieldnames != COLUMNS:
-            columns = reader.fieldnames or []
+        columns = reader.fieldnames or []
+        profile = _buffer_profile(metadata, columns)
+        if columns != COLUMNS and profile is None:
             extras = columns[len(COLUMNS):]
             if (diagnostic_issues is None or columns[:len(COLUMNS)] != COLUMNS
                     or not extras or len(set(columns)) != len(columns)
@@ -103,7 +158,22 @@ def _read_source(path, *, diagnostic_issues=None):
     if len(rows) != count:
         raise ValueError('meta.json frames count does not match labels.csv; incomplete recording')
     actual_images = {p.name for p in (path / 'frames').iterdir()}
-    expected_images = {f'{index:06d}.jpg' for index in range(count)}
+    if any(None in row or any(v is None for v in row.values()) for row in rows):
+        raise ValueError('malformed labels.csv row')
+    frame_ids = [_integer(row['frame'], 'frame') for row in rows]
+    if any(b <= a for a, b in zip(frame_ids, frame_ids[1:])):
+        raise ValueError('frame indexes must be unique and strictly increasing')
+    missing_ids = frame_ids[-1] + 1 - count
+    if profile is None and frame_ids != list(range(count)):
+        raise ValueError('frame indexes must be contiguous from zero')
+    if 'accepted_frame_count' in metadata:
+        acquired = _integer(metadata['accepted_frame_count'], 'accepted_frame_count')
+        accounted = count + dropped + (profile['discarded'] + profile['stopped'] if profile else 0)
+        if acquired != accounted or frame_ids[-1] >= acquired:
+            raise ValueError('accepted_frame_count does not reconcile with saved/discarded frames')
+    if profile is not None and missing_ids > dropped + profile['discarded']:
+        raise ValueError('frame index gaps exceed queue-drop/rewind/takeover counts')
+    expected_images = {f'{index:06d}.jpg' for index in frame_ids}
     if actual_images != expected_images:
         raise ValueError('missing or extra frame files; cannot infer completed recording')
     previous_t, previous_segment = Decimal('-1'), -1
@@ -111,8 +181,7 @@ def _read_source(path, *, diagnostic_issues=None):
     for index, row in enumerate(rows):
         if None in row or any(value is None for value in row.values()):
             raise ValueError('malformed labels.csv row')
-        if _integer(row['frame'], 'frame') != index:
-            raise ValueError('frame indexes must be contiguous from zero')
+        frame_id = frame_ids[index]
         segment = _integer(row['segment'], 'segment')
         time = _decimal(row['t'], 't', 4)
         if time < 0 or time < previous_t or segment < previous_segment or segment >= segments:
@@ -138,7 +207,14 @@ def _read_source(path, *, diagnostic_issues=None):
         steer = _decimal(row['tele_steer'], 'tele_steer')
         if steer != steer.to_integral_value() or not -128 <= steer <= 127:
             raise ValueError('invalid telemetry steer')
-        image_path = path / 'frames' / f'{index:06d}.jpg'
+        for key, places in [('race_time', 3), ('distance', 1), ('yaw_rate', 4)]:
+            if key in row:
+                _decimal(row[key], key, places)
+        for key, upper in [('game_ms', 2**32 - 1), ('gear', 255),
+                           ('car_ordinal', 2**31 - 1), ('car_class', 7), ('car_pi', 2**31 - 1)]:
+            if key in row and _integer(row[key], key) > upper:
+                raise ValueError(f'invalid {key}')
+        image_path = path / 'frames' / f'{frame_id:06d}.jpg'
         if image_path.is_symlink() or not image_path.is_file():
             raise ValueError('frame symlinks and non-files are forbidden')
         with Image.open(image_path) as image:
@@ -152,15 +228,43 @@ def _read_source(path, *, diagnostic_issues=None):
     legacy_interrupt = (set(metadata) == LEGACY_METADATA_KEYS
                         and previous_segment == segments - 2
                         and empty_segments == dropped + 1)
-    if empty_segments > dropped and not legacy_interrupt:
+    budget = dropped + (profile['discarded'] + profile['stopped'] if profile else 0)
+    if profile and previous_segment + 1 - len(observed_segments) > missing_ids:
+        raise ValueError('empty earlier segments lack missing frame-index evidence')
+    trailing_empty = segments - previous_segment - 1
+    if profile and missing_ids + trailing_empty > budget:
+        raise ValueError('missing frame IDs and trailing segments exceed total discard evidence')
+    if empty_segments > budget and not legacy_interrupt:
         issue = 'meta.json empty segments exceed dropped-frame evidence'
         if diagnostic_issues is None:
             raise ValueError(issue)
         diagnostic_issues.append(issue)
+    advertised_timing = metadata.get('capture_provenance', {}).get('timing_file')
+    if advertised_timing is not None and (advertised_timing != 'capture_timing.csv'
+            or not (path / advertised_timing).is_file()):
+        raise ValueError('advertised timing sidecar missing or unsupported')
+    expected_hud = {f'{i:06d}' for i in frame_ids}
+    for artifact in _auxiliary_files(path):
+        if artifact.is_symlink() or not artifact.is_file():
+            raise ValueError('auxiliary symlinks/non-files are forbidden')
+        if artifact.name == 'capture_timing.csv':
+            with artifact.open(newline='') as handle:
+                timing_rows = list(csv.DictReader(handle))
+            if (len(timing_rows) != count or any('frame' not in row or None in row
+                    or any(v is None for v in row.values()) for row in timing_rows)
+                    or [_integer(row['frame'], 'timing frame') for row in timing_rows] != frame_ids):
+                raise ValueError('timing sidecar frame coverage differs from labels')
+        if artifact.parent.name == 'hud':
+            if artifact.suffix != '.png' or artifact.stem not in expected_hud:
+                raise ValueError('unexpected HUD patch filename')
+            with Image.open(artifact) as image:
+                if image.format != 'PNG':
+                    raise ValueError('HUD patch must be PNG')
+                image.load()
     return metadata, rows
 
 
-def import_recording(source, destination, *, expert_mode=None):
+def import_recording(source, destination, *, expert_mode=None, exclude_sessions=None):
     """Copy one complete recording, retaining original CSV/JPEG bytes and metadata."""
     from forza_ai.data.sessions import load_session
 
@@ -170,6 +274,12 @@ def import_recording(source, destination, *, expert_mode=None):
     if destination.exists() or destination.is_symlink() or destination.resolve().is_relative_to(source):
         raise ValueError('destination must be new and outside the source recording')
     metadata, _ = _read_source(source)
+    exclusions = []
+    if exclude_sessions is not None:
+        exclusions = [line.split('#', 1)[0].strip() for line in Path(exclude_sessions).read_text().splitlines()]
+        exclusions = [prefix for prefix in exclusions if prefix]
+        if any(metadata['session'].startswith(prefix) for prefix in exclusions):
+            raise ValueError('source session matches an explicitly configured exclusion prefix')
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='forza-import-', dir=destination.parent) as temporary:
         staging = Path(temporary) / 'recording'
@@ -177,12 +287,16 @@ def import_recording(source, destination, *, expert_mode=None):
         shutil.copyfile(source / 'meta.json', staging / 'meta.json')
         shutil.copyfile(source / 'labels.csv', staging / 'labels.csv')
         shutil.copytree(source / 'frames', staging / 'frames')
+        for artifact in _auxiliary_files(source):
+            target = staging / artifact.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(artifact, target)
         group = 'record.py:' + metadata['session']
         manifest = {
             'schema_version': FORMAT, 'session_id': group, 'split_group': group,
             'image_stage': 'road_crop', 'completed': True,
             'completion_evidence': 'meta.json after normal closure plus matching rows, image count and dimensions',
-            'expert_mode': 'manual',
+            'expert_mode': 'manual', 'exclusion_prefixes_checked': exclusions,
             'timing': TIMING, 'source_metadata': metadata,
         }
         (staging / 'metadata.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -214,7 +328,7 @@ def _aligned_session(path, source_meta, rows, alignment, fingerprint_files):
     group = 'record.py:' + source_meta['session']
     accepted, rejected = [], Counter()
     digest = hashlib.sha256()
-    for name in fingerprint_files:
+    for name in list(fingerprint_files) + [str(p.relative_to(path)) for p in _auxiliary_files(path)]:
         digest.update(name.encode())
         digest.update((path / name).read_bytes())
     previous_time, previous_image = None, None
@@ -247,13 +361,18 @@ def _aligned_session(path, source_meta, rows, alignment, fingerprint_files):
             rejected['stale_telemetry'] += 1
             continue
         accepted.append(Sample(image, time_ns, float(row['steer_deg']), float(row['speed_mps']), 'manual'))
+    profile = _buffer_profile(source_meta, list(rows[0]))
     provenance = {
         'format': FORMAT, 'timing': TIMING, 'source_session': source_meta['session'],
         'segments': source_meta['segments'], 'capture_config': source_meta['config'],
         'saved_size': source_meta['saved_size'], 'expert_basis': 'explicit --expert-mode manual',
-        'empty_segment_evidence': ('legacy KeyboardInterrupt may leave one unqueued trailing segment'
+        'buffering': profile,
+        'auxiliary_files_preserved': [str(p.relative_to(path)) for p in _auxiliary_files(path)],
+        'additional_columns_not_model_inputs': list(rows[0])[len(COLUMNS):],
+        'source_identity': 'schema-compatible; exact executed commit not recorded',
+        'empty_segment_evidence': ('recorded queue drops plus rewind/takeover/stop discards' if profile else ('legacy KeyboardInterrupt may leave one unqueued trailing segment'
             if source_meta['segments'] - len({r['segment'] for r in rows}) > source_meta['dropped']
-            and set(source_meta) == LEGACY_METADATA_KEYS else 'recorded dropped-frame counts'),
+            and set(source_meta) == LEGACY_METADATA_KEYS else 'recorded dropped-frame counts')),
     }
     return Session(path, group, accepted, dict(rejected), digest.hexdigest(), group, provenance)
 
