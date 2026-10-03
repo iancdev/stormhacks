@@ -109,6 +109,11 @@ def _read_source(path, *, diagnostic_issues=None):
         if entry.is_symlink() or not entry.exists():
             raise ValueError(f'{name} missing or symlinked; recording must be normally closed')
     metadata = json.loads((path / 'meta.json').read_text())
+    if 'producer_schema' in metadata and metadata['producer_schema'] != 'record_py_buffered_20_v1':
+        raise ValueError('unsupported producer_schema')
+    if 'producer_sha256' in metadata and (not isinstance(metadata['producer_sha256'], str)
+            or re.fullmatch(r'[0-9a-f]{64}', metadata['producer_sha256']) is None):
+        raise ValueError('producer_sha256 must be 64 lowercase hexadecimal characters')
     if metadata.get('completed') is False:
         raise ValueError('source explicitly marks recording incomplete')
     if metadata.get('telemetry') is not True:
@@ -147,6 +152,10 @@ def _read_source(path, *, diagnostic_issues=None):
         reader = csv.DictReader(handle)
         columns = reader.fieldnames or []
         profile = _buffer_profile(metadata, columns)
+        if metadata.get('producer_schema') == 'record_py_buffered_20_v1' and (
+                columns != COLUMNS + EXTENDED_SUFFIXES[-1] or profile is None
+                or profile['family'] != 'buffered_takeover'):
+            raise ValueError('producer_schema does not match columns/buffering metadata')
         if columns != COLUMNS and profile is None:
             extras = columns[len(COLUMNS):]
             if (diagnostic_issues is None or columns[:len(COLUMNS)] != COLUMNS
@@ -370,6 +379,8 @@ def _aligned_session(path, source_meta, rows, alignment, fingerprint_files):
         'auxiliary_files_preserved': [str(p.relative_to(path)) for p in _auxiliary_files(path)],
         'additional_columns_not_model_inputs': list(rows[0])[len(COLUMNS):],
         'source_identity': 'schema-compatible; exact executed commit not recorded',
+        'declared_producer_schema': source_meta.get('producer_schema'),
+        'declared_producer_sha256': source_meta.get('producer_sha256'),
         'empty_segment_evidence': ('recorded queue drops plus rewind/takeover/stop discards' if profile else ('legacy KeyboardInterrupt may leave one unqueued trailing segment'
             if source_meta['segments'] - len({r['segment'] for r in rows}) > source_meta['dropped']
             and set(source_meta) == LEGACY_METADATA_KEYS else 'recorded dropped-frame counts')),

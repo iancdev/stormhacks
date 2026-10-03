@@ -310,3 +310,9 @@ carry `diagnostic_only: true`, cannot enter production splitting, and must not b
 used to manufacture held-out metrics or deployment artifacts. The now-supported
 sample no longer needs that fallback for import; its bounded one-recording GPU
 smoke remains separate from normal multi-group training.
+
+New recordings may declare `producer_schema=record_py_buffered_20_v1` and
+`producer_sha256`. If present, the schema must match the 20-column takeover-buffer
+format and the hash must be 64 lowercase hexadecimal characters. Both fields
+remain optional for old recordings. Imports preserve them as **declared** producer
+identity; syntax validation alone does not prove the executing source's identity.

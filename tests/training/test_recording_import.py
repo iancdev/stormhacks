@@ -402,3 +402,25 @@ def test_explicit_exclusion_file_uses_original_session_identity(tmp_path):
     result = import_recording(source, tmp_path / 'accepted', expert_mode='manual', exclude_sessions=rules)
     assert result['accepted'] == 8
     assert json.loads((tmp_path / 'accepted/metadata.json').read_text())['exclusion_prefixes_checked'] == ['different-']
+
+
+def test_optional_producer_identity_preserved_without_claiming_verification(tmp_path):
+    source = extended_recording(tmp_path / 'source', cars=True)
+    edit_meta(source, lambda m: m.update(producer_schema='record_py_buffered_20_v1', producer_sha256='ab' * 32))
+    result = import_recording(source, tmp_path / 'out', expert_mode='manual')
+    assert result['provenance']['declared_producer_schema'] == 'record_py_buffered_20_v1'
+    assert result['provenance']['declared_producer_sha256'] == 'ab' * 32
+
+
+@pytest.mark.parametrize('fields,cars', [
+    ({'producer_schema': 'unknown'}, True),
+    ({'producer_schema': 'record_py_buffered_20_v1'}, False),
+    ({'producer_sha256': 'A' * 64}, True),
+    ({'producer_sha256': 'a' * 63}, True),
+    ({'producer_sha256': 123}, True),
+])
+def test_invalid_declared_producer_identity_fails(tmp_path, fields, cars):
+    source = extended_recording(tmp_path / 'source', cars=cars)
+    edit_meta(source, lambda m: m.update(fields))
+    with pytest.raises(ValueError, match='producer_'):
+        import_recording(source, tmp_path / 'out', expert_mode='manual')
