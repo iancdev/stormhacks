@@ -53,4 +53,5 @@ The gaming PC records frames, wheel inputs, telemetry, and control mode into com
 - Private repository created and pushed: `iancdev/stormhacks`.
 - Hardware diagnostic and pinned Windows dependencies received in commit `d18ec40`.
 - Training work dispatched to the designated chat; implementation in progress.
-- Adapter implementation starting in parallel; no model, recording artifact, or hardware validation available in this checkout yet.
+- Adapter software now includes a PD controller, explicit engagement/takeover, command expiry, separate placeholder policy worker, simulated wheel, and a timestamped FH4 receiver. The first simulated three-second run reached a five-degree target while forwarding measured angles. Physical Windows acceptance is still outstanding; see [ADAPTER.md](ADAPTER.md).
+- The supplied baseline reference is NVIDIA's [End to End Learning for Self-Driving Cars](https://arxiv.org/abs/1604.07316). The training chat is incorporating the paper with explicit documentation of our speed input and physical-angle output differences.

@@ -37,4 +37,8 @@ Overtaking, navigation, reinforcement learning, and network-separated inference 
 
 ## Status
 
-Planning stage. Prior hardware experiments reportedly demonstrated wheel input, motor actuation, and Forza/vJoy communication separately. Those scripts are not yet in this repository; integrated operation and live telemetry decoding still require verification.
+The tested hardware diagnostic is in `utils/test.py`. Training/Colab and the physical adapter are being built in parallel. The adapter's controller and placeholder policy can run against simulated hardware; Windows motor control and integration still require hardware acceptance. The user reports a verified short recording, but no real dataset or recording implementation has been added to this checkout yet.
+
+- [Durable delivery plan and ownership](docs/PLAN.md)
+- [Shared recording and model contracts](docs/CONTRACTS.md)
+- [Adapter usage and Windows acceptance](docs/ADAPTER.md)
