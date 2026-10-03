@@ -35,7 +35,10 @@ for i in $(seq 1 "$MAX_ITERS"); do
   task=$(grep -m1 '^- \[ \]' "$DIR/TASKS.md" | sed 's/^- \[ \] //' | cut -c1-80)
   echo "=== Iteration $i: $task"
 
-  "$DEVIN_BIN" --permission-mode "$MODE" --respect-workspace-trust false -p "$PROMPT" || {
+  # Clean env: when launched from inside Devin Desktop's terminal, inherited IDE vars
+  # make the CLI ignore ~/.local/share/devin/credentials.toml and fail with "Login canceled".
+  env -i HOME="$HOME" USER="$USER" PATH="$PATH" TERM="${TERM:-xterm}" LANG="${LANG:-en_US.UTF-8}" \
+    "$DEVIN_BIN" --permission-mode "$MODE" --respect-workspace-trust false -p "$PROMPT" || {
     echo "devin exited non-zero on iteration $i; stopping." >&2
     exit 1
   }
