@@ -53,6 +53,8 @@ Use the wheel PC's existing working Python environment, or activate the new one.
 Identify the zero-based takeover button using `python utils/test.py wheel`.
 Close Forza for this first stationary test, and keep the wheel clear when opening
 its driver: SDL/Thrustmaster may enable native centering during initialization.
+Start with the wheel near centre. Do not interrupt an active data-collection run;
+run this check once the wheel is available.
 
 ```powershell
 python -m forza_ai.preflight --json
@@ -111,6 +113,10 @@ This is a fixed-angle test server, not a driving model. On the wheel PC, start
 Forza, enter a parked active driving scene, enable Data Out at `127.0.0.1:9999`,
 and keep the game in front. First use shadow mode:
 
+Only one process should own the wheel and listen on Data Out port 9999. Stop a
+separate recorder/old adapter before starting this runtime, or coordinate a
+different configured Data Out port. This runtime is not the dataset recorder.
+
 ```powershell
 python -m forza_ai.runtime --backend windows --inference-host DESKTOP_LAN_IP --crop LEFT TOP RIGHT BOTTOM --shadow --duration 30 --takeover-button BUTTON_INDEX --status-csv runs/network-shadow.csv
 ```
@@ -150,6 +156,10 @@ predictions; use assistance only after real wheel acceptance and model evaluatio
 The default request timeout is 200 ms (`--network-timeout`), and the controller
 independently rejects old source observations. Increasing a network timeout does
 not disable the controller's freshness bound.
+
+The default desktop server is CPU inference, preserving the portable exported
+model's behavior. GPU training and CPU inference can live on the same desktop;
+benchmark live latency before training and inference compete for its resources.
 
 ## Verification status
 

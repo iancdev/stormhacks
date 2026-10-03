@@ -6,7 +6,11 @@ real-world driving-quality result yet.
 
 ## Installation
 
-Use Python 3.10+ on Colab or another training machine. Install a CUDA-compatible
+The primary training host is the connected Windows desktop `DESKTOP-0HR4O88`;
+it also serves live inference over LAN to the separate game/wheel PC. See
+[TWO_PC_SETUP.md](TWO_PC_SETUP.md). Colab remains a fallback.
+
+Use Python 3.10+ on the desktop, Colab, or another training machine. Install a CUDA-compatible
 PyTorch build appropriate for that host, then run from the repository root:
 
 ```bash

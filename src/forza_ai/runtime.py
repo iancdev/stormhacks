@@ -133,7 +133,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
     worker = None
     stop_console = threading.Event()
     rows = []
-    summary = {"ticks": 0, "max_abs_torque": 0.0, "mode": "manual", "reason": "not_started"}
+    summary = {"ticks": 0, "max_abs_torque": 0.0, "mode": "manual", "reason": "not_started",
+               "autocenter_disabled_confirmed": getattr(adapter, "autocenter_disabled_confirmed", None)}
     error_text = None
     progress_worker = None
     try:

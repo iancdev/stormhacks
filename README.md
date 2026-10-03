@@ -39,7 +39,7 @@ Overtaking, navigation, and reinforcement learning are future extensions.
 
 ## Status
 
-The tested hardware diagnostic is in `utils/test.py`. The offline training pipeline and physical adapter are implemented. Synthetic sessions exercise validation, training, resume, evaluation, and portable export. The adapter can run its controller and placeholder policy against simulated hardware. No real dataset has been supplied, no GPU/Colab run has been verified, and Windows motor control still requires hardware acceptance. The user reports a verified short recording, but its recorder and session files are not in this checkout yet.
+The tested hardware diagnostic is in `utils/test.py`. Offline training, physical control, fresh camera/telemetry input, and authenticated LAN inference are implemented. The desktop trains and serves predictions; the game/wheel PC captures input and controls the wheel locally. The 172-test suite covers synthetic training, loopback transport, simulated steering, and failure paths. No real dataset has been supplied, and actual Windows movement, desktop GPU, and two-PC operation still require acceptance. The user reports a verified short recording, but its recorder and session files are not in this checkout yet.
 
 - [Durable delivery plan and ownership](docs/PLAN.md)
 - [Shared recording and model contracts](docs/CONTRACTS.md)

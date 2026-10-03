@@ -238,6 +238,57 @@ class LiveRuntimeTests(unittest.TestCase):
             self.assertAlmostEqual(result["predicted_angle_deg"], 4.49985, places=3)
             self.assertGreater(result["max_abs_torque"], 0)
 
+    def test_remote_desktop_prediction_drives_local_simulated_wheel(self):
+        from forza_ai.inference_server import InferenceServer
+        from forza_ai.network import RemotePolicy
+
+        class DesktopPredictor:
+            def predict(self, pixels, speed):
+                self.assertion = (pixels.shape, speed)
+                return 5.0
+
+        key = b"software-test-only-shared-key"
+        predictor = DesktopPredictor()
+        server = InferenceServer(predictor, port=0, key=key)
+        server.start()
+        try:
+            policy = RemotePolicy(*server.address, key=key)
+            adapter = SimulatedAdapter()
+            result = run(adapter, policy, camera=FakeCamera(), receiver=FakeTelemetry(),
+                         assist=True, duration=0.3)
+            self.assertEqual(predictor.assertion, ((66, 200, 3), 10.0))
+            self.assertEqual(result["predicted_angle_deg"], 5)
+            self.assertGreater(result["actual_angle_deg"], 0)
+            self.assertGreater(result["max_abs_torque"], 0)
+            self.assertEqual(adapter.torque, 0)
+        finally:
+            server.close()
+
+    def test_network_loss_disengages_local_control(self):
+        from forza_ai.inference_server import InferenceServer
+        from forza_ai.network import RemotePolicy
+
+        class DesktopPredictor:
+            def predict(self, pixels, speed):
+                return 5.0
+
+        key = b"software-test-only-shared-key"
+        server = InferenceServer(DesktopPredictor(), port=0, key=key)
+        server.start()
+        timer = threading.Timer(0.2, server.close)
+        timer.start()
+        try:
+            policy = RemotePolicy(*server.address, key=key, timeout_s=0.1)
+            adapter = SimulatedAdapter()
+            result = run(adapter, policy, camera=FakeCamera(), receiver=FakeTelemetry(),
+                         assist=True, duration=0.5)
+            self.assertGreater(result["max_abs_torque"], 0)
+            self.assertEqual(result["mode"], "takeover")
+            self.assertEqual(adapter.torque, 0)
+        finally:
+            timer.join(timeout=1)
+            server.close()
+
 
 if __name__ == "__main__":
     unittest.main()
