@@ -46,7 +46,10 @@ STEER_UNITS_PER_DEG = 73.0   # TMX a0, 900 deg rotation
 MODEL_SIZE = (200, 66)       # PilotNet input, shown in the preview only
 VJOY_REST = {"X": 0x4000, "Y": 0x8000, "Z": 0x8000}  # centred, brake released, gas released
 
-DEFAULT_CONFIG = {"monitor": 0, "crop": None, "masks": [], "save_width": 320}
+# hud_box: the gear number on the speedometer (screen coords, 1920x1080 FH4 HUD). Saved as a tiny
+# patch per frame so sync_check.py can line up on-screen gear changes with telemetry gear changes.
+DEFAULT_CONFIG = {"monitor": 0, "crop": None, "masks": [], "save_width": 320,
+                  "hud_box": [1700, 852, 1756, 904]}
 
 
 # ---------------------------------------------------------------- config + image helpers
@@ -183,6 +186,9 @@ def show_preview(screen, cfg):
         cv2.rectangle(overlay, (mx0, my0), (mx1, my1), (0, 0, 255), -1)
     full = cv2.addWeighted(overlay, 0.45, screen, 0.55, 0)
     cv2.rectangle(full, (x0, y0), (x1, y1), (0, 255, 0), 4)
+    if cfg.get("hud_box"):
+        hx0, hy0, hx1, hy1 = cfg["hud_box"]
+        cv2.rectangle(full, (hx0, hy0), (hx1, hy1), (255, 128, 0), 4)   # blue: sync patch, not training
     full = cv2.resize(full, (960, int(960 * screen.shape[0] / screen.shape[1])), interpolation=cv2.INTER_AREA)
 
     # right: exactly what gets saved, and the squashed model input, both enlarged
@@ -337,13 +343,14 @@ class TelemetryReader(threading.Thread):
                            race_time,
                            struct.unpack_from("<f", data, 292)[0],
                            struct.unpack_from("<f", data, 48)[0],    # AngularVelocityY (yaw rate, rad/s)
-                           struct.unpack_from("<I", data, 4)[0])     # TimestampMS (game clock)
+                           struct.unpack_from("<I", data, 4)[0],     # TimestampMS (game clock)
+                           data[319])                                # Gear
         self.sock.close()
 
 
 COLUMNS = ["frame", "segment", "t", "steer_raw", "steer_deg", "brake", "gas",
            "wheel_age_ms", "speed_mps", "race_on", "tele_steer", "tele_age_ms", "race_time", "distance",
-           "yaw_rate", "game_ms"]
+           "yaw_rate", "game_ms", "gear"]
 
 
 class Writer(threading.Thread):
@@ -352,7 +359,9 @@ class Writer(threading.Thread):
     def __init__(self, session_dir, quality):
         super().__init__(daemon=True)
         self.frames_dir = os.path.join(session_dir, "frames")
+        self.hud_dir = os.path.join(session_dir, "hud")
         os.makedirs(self.frames_dir)
+        os.makedirs(self.hud_dir)
         self.csv_file = open(os.path.join(session_dir, "labels.csv"), "w", newline="")
         self.csv = csv.writer(self.csv_file)
         self.csv.writerow(COLUMNS)
@@ -365,8 +374,10 @@ class Writer(threading.Thread):
             item = self.q.get()
             if item is None:
                 break
-            img, row = item
+            img, hud, row = item
             cv2.imwrite(os.path.join(self.frames_dir, f"{row[0]:06d}.jpg"), img, self.params)
+            if hud is not None:
+                cv2.imwrite(os.path.join(self.hud_dir, f"{row[0]:06d}.png"), hud)
             self.csv.writerow(row)
             n += 1
             if n % 100 == 0:
@@ -406,7 +417,14 @@ def cmd_record(args):
     writer.start()
 
     cam = dxcam.create(output_idx=cfg["monitor"], output_color="BGR")
-    cam.start(region=tuple(cfg["crop"]), target_fps=args.fps, video_mode=True)
+    # One capture region covering the crop and the gear patch; both are sliced out of each frame.
+    hud_box = cfg.get("hud_box")
+    boxes = [cfg["crop"]] + ([hud_box] if hud_box else [])
+    region = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+              max(b[2] for b in boxes), max(b[3] for b in boxes))
+    cx0, cy0, cx1, cy1 = (v - o for v, o in zip(cfg["crop"], region[:2] * 2))
+    hx0, hy0, hx1, hy1 = (v - o for v, o in zip(hud_box, region[:2] * 2)) if hud_box else (0, 0, 0, 0)
+    cam.start(region=region, target_fps=args.fps, video_mode=True)
 
     print(f"Recording to {session_dir}\n"
           f"crop={cfg['crop']} masks={len(cfg['masks'])} saved={size[0]}x{size[1]} fps={args.fps} "
@@ -425,9 +443,9 @@ def cmd_record(args):
 
     def flush(block=False):
         nonlocal dropped
-        pt, seg, im, row = pending.popleft()
+        pt, seg, im, hud, row = pending.popleft()
         try:
-            writer.q.put((im, row), block=block)
+            writer.q.put((im, hud, row), block=block)
             times.append((seg, pt))
         except queue.Full:
             dropped += 1
@@ -479,8 +497,10 @@ def cmd_record(args):
                        f"{tl[2]:.3f}" if tl else "", tl[1] if tl else "",
                        tl[3] if tl else "", f"{(t - tl[0]) * 1000:.1f}" if tl else "",
                        f"{tl[4]:.3f}" if tl else "", f"{tl[5]:.1f}" if tl else "",
-                       f"{tl[6]:.4f}" if tl else "", tl[7] if tl else ""]
-                pending.append((t, segment, process(img, masks, size), row))
+                       f"{tl[6]:.4f}" if tl else "", tl[7] if tl else "", tl[8] if tl else ""]
+                crop_img = img[cy0:cy1, cx0:cx1]
+                hud = img[hy0:hy1, hx0:hx1].copy() if hud_box else None
+                pending.append((t, segment, process(crop_img, masks, size), hud, row))
                 frame_idx += 1
                 # Only flush while driving: if telemetry stops during a rewind, the frames before it
                 # must still be here when the clock jump shows up on the first packet after it.
