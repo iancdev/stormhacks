@@ -437,6 +437,12 @@ def cmd_record(args):
     frame_idx, segment, recording = 0, -1, False
     dropped = discarded = rewinds = 0
     was_rewinding = False
+    # Takeover guard: while you drive, Forza's telemetry Steer = k * wheel degrees (k depends on the
+    # car, learned from your own driving). When the game steers the car itself (e.g. after the finish
+    # line), the two stop matching, and those frames aren't your driving.
+    ratios = deque(maxlen=900)
+    mismatch_run = match_run = takeovers = 0
+    in_takeover = False
     times = []                       # (segment, t) of kept frames, for the gap report
     # Frames wait here for drop_seconds before going to disk, so a rewind can still take them back.
     pending = deque()
@@ -485,6 +491,26 @@ def cmd_record(args):
                 active, state = False, f"rewind, dropped last {args.drop_seconds:g}s"
             was_rewinding = rewinding
 
+            if tele_fresh and wheel.live:
+                deg, ts = steer / STEER_UNITS_PER_DEG, tl[3]
+                if recording and not in_takeover and 5 < abs(deg) < 60 and abs(ts) < 120:
+                    ratios.append(ts / deg)
+                if len(ratios) >= 100:
+                    k = float(np.median(ratios))
+                    mismatch = abs(ts - max(-127.0, min(127.0, k * deg))) > 15
+                    mismatch_run = mismatch_run + 1 if mismatch else 0
+                    match_run = 0 if mismatch else match_run + 1
+                    if not in_takeover and mismatch_run >= 6:
+                        in_takeover = True
+                        takeovers += 1
+                        while pending and pending[-1][0] >= t - 0.5:   # the run-up to detection
+                            pending.pop()
+                            discarded += 1
+                    elif in_takeover and match_run >= 30:
+                        in_takeover = False
+            if in_takeover:
+                active, state = False, "game steering, not you"
+
             if active and not recording:
                 segment += 1          # new segment after every pause: don't shift labels across gaps
             recording = active
@@ -532,7 +558,8 @@ def cmd_record(args):
     report = gap_report(times, args.fps)
     meta = {"session": session, "config": cfg, "saved_size": size, "fps_target": args.fps,
             "frames": len(times), "segments": segment + 1, "dropped": dropped,
-            "rewinds": rewinds, "discarded_by_rewind": discarded, "discarded_at_stop": discarded_at_stop,
+            "rewinds": rewinds, "takeovers": takeovers, "discarded_by_rewind_or_takeover": discarded,
+            "discarded_at_stop": discarded_at_stop,
             "drop_seconds": args.drop_seconds,
             "rewind_button": args.rewind_button, "vjoy": args.vjoy,
             "telemetry": tele is not None, "steer_units_per_deg": STEER_UNITS_PER_DEG,
@@ -540,7 +567,8 @@ def cmd_record(args):
     with open(os.path.join(session_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print(f"Saved {len(times)} frames in {segment + 1} segment(s) to {session_dir}\n"
-          f"Rewinds: {rewinds} ({discarded} frames thrown away). Last {args.drop_seconds:g}s before "
+          f"Rewinds: {rewinds}, game takeovers: {takeovers} ({discarded} frames thrown away). "
+          f"Last {args.drop_seconds:g}s before "
           f"Ctrl+C thrown away ({discarded_at_stop} frames). Dropped (disk too slow): {dropped}")
     if report:
         print(f"Frame gaps (ms): median {report['median_ms']}, p99 {report['p99_ms']}, "
