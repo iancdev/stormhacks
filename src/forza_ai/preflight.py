@@ -2,10 +2,10 @@
 
     python -m forza_ai.preflight --json --takeover-button 0
 
-Exit 0 means the device prerequisites checked here passed; exit 1 means they
+Exit 0 means the device discovery checks here passed; exit 1 means they
 did not. Neither result certifies Forza bindings, HidHide, calibrated physical
 direction, constant-force support, or motor stability. This command never opens
-a haptic handle, acquires vJoy, runs an effect, or changes virtual inputs.
+a joystick/haptic handle, acquires vJoy, runs an effect, or changes virtual inputs.
 """
 
 import argparse
@@ -28,6 +28,7 @@ _PACKAGES = (
 )
 
 _UNCHECKED = (
+    "Physical axes/buttons, takeover-button range, attachment, and haptic support are unverified: SDL_JoystickOpen can enable autocenter, so this read-only command never opens the wheel.",
     "Forza wheel/axis bindings, assists, and Data Out settings live inside the game; this command does not inspect them.",
     "HidHide visibility/allowlist must be checked for both this Python process and Forza; device discovery alone cannot certify it.",
     "TMX rotation, pedal calibration, physical torque direction, and takeover-button identity require manual verification.",
@@ -66,11 +67,13 @@ def _sdl_error(sdl, operation: str) -> RuntimeError:
 
 def _tmx_report(takeover_button: int | None) -> dict:
     report = {"checked": True, "ready": False, "devices": [], "selected_index": None,
-              "errors": [], "haptic_check": "joystick capability flag only",
+              "errors": [], "haptic_check": "not checked: opening the joystick can alter force state",
+              "readiness_note": "TMX name discovery only; physical counts and capabilities are unverified.",
               "known_mapping": {"steering_axis": 0, "brake_axis": 1, "throttle_axis": 2,
                                 "steering_right_positive": True, "pedals_inverted": True,
                                 "nominal_rotation_deg": 900},
-              "takeover_button": takeover_button}
+              "mapping_source": "project calibration contract, not measured by this command",
+              "takeover_button": takeover_button, "takeover_button_verified": False}
     sdl = None
     initialized = False
     try:
@@ -93,52 +96,16 @@ def _tmx_report(takeover_button: int | None) -> dict:
                 continue
             if report["selected_index"] is None:
                 report["selected_index"] = index  # Matches WindowsAdapter selection.
-            device.update(axes=None, buttons=None, attached=None, haptic_capable=None, ready=False)
-            joystick = None
-            try:
-                joystick = sdl.SDL_JoystickOpen(index)
-                if not joystick:
-                    raise _sdl_error(sdl, "SDL_JoystickOpen")
-                device["axes"] = sdl.SDL_JoystickNumAxes(joystick)
-                device["buttons"] = sdl.SDL_JoystickNumButtons(joystick)
-                if device["axes"] < 0 or device["buttons"] < 0:
-                    raise _sdl_error(sdl, "Read joystick axes/buttons metadata")
-                device["attached"] = bool(sdl.SDL_JoystickGetAttached(joystick))
-                # SDL2's Windows implementation reads the joystick's cached
-                # DIDC_FORCEFEEDBACK capability. No haptic subsystem or handle:
-                # https://github.com/libsdl-org/SDL/blob/release-2.32.10/src/haptic/windows/SDL_windowshaptic.c
-                haptic = sdl.SDL_JoystickIsHaptic(joystick)
-                if haptic < 0:
-                    raise _sdl_error(sdl, "SDL_JoystickIsHaptic")
-                device["haptic_capable"] = bool(haptic)
-                problems = []
-                if device["axes"] < 3:
-                    problems.append("TMX needs steering a0, brake a1, and throttle a2")
-                if device["buttons"] == 0:
-                    problems.append("No physical buttons available for takeover")
-                if takeover_button is not None and takeover_button >= device["buttons"]:
-                    problems.append(f"Takeover button {takeover_button} is outside the physical button range")
-                if not device["attached"]:
-                    problems.append("TMX is detached")
-                if not device["haptic_capable"]:
-                    problems.append("SDL does not report joystick haptic capability")
-                device["errors"] = problems
-                device["ready"] = not problems
-            except (Exception, SystemExit) as error:
-                device["errors"] = [_error_text(error)]
-            finally:
-                if joystick:
-                    try:
-                        sdl.SDL_JoystickClose(joystick)
-                    except Exception as error:
-                        device.setdefault("errors", []).append(_error_text(error))
-                        device["ready"] = False
-        selected = next((d for d in report["devices"] if d["index"] == report["selected_index"]), None)
-        if selected is None:
+            # SDL2's DirectInput JoystickOpen acquires the device, resets force
+            # feedback, and enables autocenter. Even capability-only checks
+            # using a joystick handle therefore violate read-only discovery.
+            # https://github.com/libsdl-org/SDL/blob/release-2.32.10/src/joystick/windows/SDL_dinputjoystick.c#L766-L864
+            device.update(axes=None, buttons=None, attached=None, haptic_capable=None,
+                          details_checked=False)
+        if report["selected_index"] is None:
             report["errors"].append("No calibrated TMX found. Check power, USB, and Python's HidHide visibility.")
         else:
-            report["errors"].extend(selected.get("errors", []))
-            report["ready"] = selected["ready"]
+            report["ready"] = True
         if sum(d["tmx_match"] for d in report["devices"]) > 1:
             report["warning"] = "Multiple TMX devices found; runtime uses the first matching SDL index."
     except (Exception, SystemExit) as error:
@@ -196,7 +163,7 @@ def build_report(vjoy_device_id: int = 1, takeover_button: int | None = None) ->
         raise ValueError("takeover_button must be a nonnegative SDL button index")
     windows = sys.platform == "win32"
     report = {
-        "schema_version": 1, "ready": False, "scope": "read_only_device_prerequisites",
+        "schema_version": 1, "ready": False, "scope": "read_only_device_discovery",
         "platform": {"system": platform.system(), "sys_platform": sys.platform,
                      "release": platform.release(), "machine": platform.machine(),
                      "python": platform.python_version(), "hardware_supported": windows},
@@ -215,7 +182,7 @@ def build_report(vjoy_device_id: int = 1, takeover_button: int | None = None) ->
     report["tmx"] = _tmx_report(takeover_button)
     report["vjoy"] = _vjoy_report(vjoy_device_id)
     report["ready"] = report["tmx"]["ready"] and report["vjoy"]["ready"]
-    report["summary"] = ("Read-only device checks passed; manual configuration and bounded movement acceptance remain required."
+    report["summary"] = ("Read-only discovery checks passed; TMX capabilities, manual configuration, and bounded movement acceptance remain unverified."
                          if report["ready"] else "Read-only device checks did not pass; inspect TMX/vJoy errors before movement testing.")
     return report
 
@@ -224,7 +191,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="emit the complete JSON report")
     parser.add_argument("--vjoy-device-id", type=int, default=1)
-    parser.add_argument("--takeover-button", type=int, help="optional SDL zero-based index to validate")
+    parser.add_argument("--takeover-button", type=int, help="record a candidate SDL index; range validation requires opening the wheel later")
     args = parser.parse_args(argv)
     try:
         report = build_report(args.vjoy_device_id, args.takeover_button)

@@ -21,12 +21,6 @@ class DiscoveryRig:
             SDL_QuitSubSystem=Mock(),
             SDL_NumJoysticks=Mock(return_value=2),
             SDL_JoystickNameForIndex=Mock(side_effect=lambda i: [b"vJoy", b"Thrustmaster TMX"][i]),
-            SDL_JoystickOpen=Mock(return_value="joystick"),
-            SDL_JoystickClose=Mock(),
-            SDL_JoystickNumAxes=Mock(return_value=3),
-            SDL_JoystickNumButtons=Mock(return_value=12),
-            SDL_JoystickGetAttached=Mock(return_value=1),
-            SDL_JoystickIsHaptic=Mock(return_value=1),
             SDL_GetError=Mock(return_value=b"test SDL failure"),
         )
         self.vjoy = SimpleNamespace(VJD_STAT_FREE=1, HID_USAGE_X=0x30, HID_USAGE_Y=0x31, HID_USAGE_Z=0x32)
@@ -47,19 +41,21 @@ class DiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.rig = DiscoveryRig()
 
-    def test_ready_uses_only_metadata_reads_and_balanced_joystick_lifetime(self):
+    def test_ready_uses_only_name_enumeration_and_balanced_subsystem_lifetime(self):
         report = self.rig.report(takeover_button=4)
         self.assertTrue(report["ready"])
-        self.assertEqual(report["scope"], "read_only_device_prerequisites")
+        self.assertEqual(report["scope"], "read_only_device_discovery")
         self.assertTrue(report["vjoy"]["exists"])
         self.assertEqual(report["vjoy"]["axes"], {"X": True, "Y": True, "Z": True})
         self.rig.sdl.SDL_InitSubSystem.assert_called_once_with(0x200)
         self.rig.sdl.SDL_QuitSubSystem.assert_called_once_with(0x200)
-        self.rig.sdl.SDL_JoystickOpen.assert_called_once_with(1)
-        self.rig.sdl.SDL_JoystickClose.assert_called_once_with("joystick")
         self.assertEqual(self.rig.native.GetVJDAxisExist.call_args_list,
                          [call(1, 0x30), call(1, 0x31), call(1, 0x32)])
-        self.assertEqual(report["tmx"]["devices"][1]["buttons"], 12)
+        self.assertIsNone(report["tmx"]["devices"][1]["buttons"])
+        self.assertIsNone(report["tmx"]["devices"][1]["axes"])
+        self.assertIsNone(report["tmx"]["devices"][1]["haptic_capable"])
+        self.assertFalse(report["tmx"]["devices"][1]["details_checked"])
+        self.assertFalse(report["tmx"]["takeover_button_verified"])
         self.assertEqual(report["tmx"]["known_mapping"]["throttle_axis"], 2)
         self.assertIn("Forza", " ".join(report["not_checked"]))
         self.assertIn("HidHide", " ".join(report["not_checked"]))
@@ -83,42 +79,40 @@ class DiscoveryTests(unittest.TestCase):
         report = self.rig.report()
         self.assertFalse(report["ready"])
         self.assertIn("No calibrated TMX", report["tmx"]["errors"][0])
-        self.rig.sdl.SDL_JoystickOpen.assert_not_called()
 
-    def test_invalid_takeover_button_blocks_readiness(self):
-        report = self.rig.report(takeover_button=12)
-        self.assertFalse(report["ready"])
-        self.assertIn("outside", report["tmx"]["errors"][0])
+    def test_takeover_range_is_explicitly_unverified_even_with_candidate(self):
+        report = self.rig.report(takeover_button=120)
+        self.assertEqual(report["tmx"]["takeover_button"], 120)
+        self.assertFalse(report["tmx"]["takeover_button_verified"])
+        self.assertIn("takeover-button range", " ".join(report["not_checked"]))
 
-    def test_missing_input_axes_and_absent_haptic_capability_block_readiness(self):
-        self.rig.sdl.SDL_JoystickNumAxes.return_value = 2
-        self.rig.sdl.SDL_JoystickIsHaptic.return_value = 0
-        report = self.rig.report()
-        self.assertFalse(report["ready"])
-        self.assertEqual(len(report["tmx"]["errors"]), 2)
-
-    def test_metadata_error_closes_open_joystick_and_subsystem(self):
-        self.rig.sdl.SDL_JoystickNumButtons.return_value = -1
+    def test_enumeration_error_closes_subsystem(self):
+        self.rig.sdl.SDL_NumJoysticks.return_value = -1
         report = self.rig.report()
         self.assertFalse(report["ready"])
         self.assertIn("test SDL failure", report["tmx"]["errors"][0])
-        self.rig.sdl.SDL_JoystickClose.assert_called_once()
         self.rig.sdl.SDL_QuitSubSystem.assert_called_once()
 
     def test_failed_init_does_not_quit_uninitialized_subsystem(self):
         self.rig.sdl.SDL_InitSubSystem.return_value = -1
         report = self.rig.report()
         self.assertFalse(report["ready"])
-        self.rig.sdl.SDL_JoystickOpen.assert_not_called()
         self.rig.sdl.SDL_QuitSubSystem.assert_not_called()
         self.assertTrue(report["vjoy"]["ready"])
 
-    def test_close_failure_still_quits_subsystem_and_is_not_ready(self):
-        self.rig.sdl.SDL_JoystickClose.side_effect = RuntimeError("close failed")
+    def test_subsystem_cleanup_failure_is_not_ready(self):
+        self.rig.sdl.SDL_QuitSubSystem.side_effect = RuntimeError("quit failed")
         report = self.rig.report()
         self.assertFalse(report["ready"])
         self.rig.sdl.SDL_QuitSubSystem.assert_called_once()
-        self.assertIn("close failed", report["tmx"]["errors"][0])
+        self.assertIn("quit failed", report["tmx"]["errors"][0])
+
+    def test_wheel_open_cannot_be_called_even_if_api_is_available(self):
+        self.rig.sdl.SDL_JoystickOpen = Mock(side_effect=AssertionError("Opening can engage centering torque"))
+        self.rig.sdl.SDL_HapticOpenFromJoystick = Mock(side_effect=AssertionError("No haptic acquisition"))
+        self.assertTrue(self.rig.report()["ready"])
+        self.rig.sdl.SDL_JoystickOpen.assert_not_called()
+        self.rig.sdl.SDL_HapticOpenFromJoystick.assert_not_called()
 
     def test_import_system_exit_from_missing_vjoy_dll_becomes_report_error(self):
         def import_module(name):
@@ -168,7 +162,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_cli_json_and_exit_codes_match_report(self):
         for ready in (True, False):
             output = io.StringIO()
-            report = {"ready": ready, "scope": "read_only_device_prerequisites"}
+            report = {"ready": ready, "scope": "read_only_device_discovery"}
             with patch("forza_ai.preflight.build_report", return_value=report) as build, redirect_stdout(output):
                 exit_code = main(["--json", "--vjoy-device-id", "2", "--takeover-button", "4"])
             self.assertEqual(exit_code, 0 if ready else 1)
