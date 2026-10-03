@@ -1,0 +1,214 @@
+"""Authenticated LAN model server; start explicitly on the GPU/inference PC."""
+
+import argparse
+import secrets
+import socket
+import threading
+import time
+
+from forza_ai.network import (
+    VERSION, ProtocolError, _angle, _decode_png, _identifier, _ipv4, _key_bytes,
+    _port, _receive_message, _remaining, _schema, _send_message, _session, _speed, _timeout,
+)
+
+
+class InferenceServer:
+    """Single active connection with bounded I/O and independent model execution.
+
+    A stalled predictor cannot bypass the client's deadline or local controller
+    timeout. Python cannot forcibly stop model code: close shuts sockets first,
+    then reports if its daemon worker has not stopped within one second.
+    """
+
+    def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0):
+        self.predictor = predictor
+        self.host = _ipv4(host)
+        self.port = _port(port, allow_zero=True)
+        self.timeout_s = _timeout(timeout_s)
+        self._key = _key_bytes(key)
+        self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._listener = None
+        self._client = None
+        self._thread = None
+        self._address = None
+        self._last_error = None
+        self._running = False
+
+    @property
+    def address(self):
+        with self._lock:
+            return self._address
+
+    @property
+    def last_error(self):
+        with self._lock:
+            return self._last_error
+
+    @property
+    def running(self):
+        with self._lock:
+            return self._running
+
+    def start(self):
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                if self._stop.is_set():
+                    raise RuntimeError("inference server is still stopping")
+                return
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                listener.bind((self.host, self.port))
+                listener.listen(1)
+                listener.settimeout(0.1)
+            except BaseException:
+                listener.close()
+                raise
+            self._stop.clear()
+            self._listener = listener
+            with self._lock:
+                self._address = listener.getsockname()
+                self._last_error = None
+                self._running = True
+            self._thread = threading.Thread(target=self._serve, args=(listener,),
+                                            name="remote-inference", daemon=True)
+            try:
+                self._thread.start()
+            except BaseException:
+                listener.close()
+                self._listener = None
+                self._thread = None
+                with self._lock:
+                    self._address = None
+                    self._running = False
+                raise
+
+    def _serve(self, listener):
+        try:
+            while not self._stop.is_set():
+                try:
+                    client, _ = listener.accept()
+                except socket.timeout:
+                    continue
+                except OSError as error:
+                    if not self._stop.is_set():
+                        with self._lock:
+                            self._last_error = error
+                    break
+                with self._lock:
+                    self._client = client
+                try:
+                    client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    if not self._stop.is_set():
+                        self._serve_client(client)
+                except Exception as error:
+                    if not self._stop.is_set():
+                        with self._lock:
+                            self._last_error = error
+                finally:
+                    client.close()
+                    with self._lock:
+                        self._client = None
+        finally:
+            listener.close()
+            with self._lock:
+                self._running = False
+                self._address = None
+
+    def _serve_client(self, client):
+        session = secrets.token_hex(16)
+        _send_message(client, self._key, {"version": VERSION, "kind": "hello", "session": session},
+                      b"", time.monotonic() + self.timeout_s)
+        next_request_id = 1
+        while not self._stop.is_set():
+            deadline = time.monotonic() + self.timeout_s
+            request, payload = _receive_message(client, self._key, deadline)
+            _schema(request, "predict", {"session", "request_id", "nonce", "frame_id", "speed_mps", "width", "height"})
+            if (_session(request["session"]) != session
+                    or _identifier(request["request_id"], positive=True) != next_request_id):
+                raise ProtocolError("replayed or incorrectly ordered request")
+            frame_id = _identifier(request["frame_id"])
+            nonce = _session(request["nonce"])
+            speed = _speed(request["speed_mps"])
+            pixels = _decode_png(payload, request["width"], request["height"])
+            _remaining(deadline)
+            if self._stop.is_set():
+                return
+            next_request_id += 1
+            angle = _angle(self.predictor.predict(pixels, speed))
+            response = {"version": VERSION, "kind": "prediction", "session": session,
+                        "request_id": request["request_id"], "nonce": nonce,
+                        "frame_id": frame_id, "angle_deg": angle}
+            _send_message(client, self._key, response, b"", deadline)
+
+    def close(self):
+        with self._lifecycle_lock:
+            self._stop.set()
+            with self._lock:
+                client = self._client
+                self._running = False
+            if client is not None:
+                try:
+                    client.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                client.close()
+            if self._listener is not None:
+                self._listener.close()
+            if self._thread is not None:
+                self._thread.join(timeout=1.0)
+                if self._thread.is_alive():
+                    raise RuntimeError("inference worker is still running; sockets have been closed")
+            self._listener = None
+            self._thread = None
+            with self._lock:
+                self._address = None
+
+
+class _FixedPredictor:
+    def __init__(self, angle):
+        self.angle = _angle(angle)
+        if abs(self.angle) > 15:
+            raise ValueError("stationary test targets must be within +/-15 degrees")
+
+    def predict(self, pixels, speed):
+        return self.angle
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bind", default="127.0.0.1", help="numeric LAN IPv4 address; default loopback")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--timeout", type=float, default=2.0, help="total per-request server I/O deadline, seconds")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--model", help="export directory containing model.pt and metadata.json")
+    mode.add_argument("--test-target", type=float, help="explicit fixed angle test; NOT a driving model")
+    args = parser.parse_args(argv)
+    # Check configuration/key before loading a potentially expensive model.
+    key = _key_bytes()
+    _ipv4(args.bind)
+    _port(args.port)
+    _timeout(args.timeout)
+    if args.model is not None:
+        from forza_ai.policies.predictor import SteeringPredictor
+
+        predictor = SteeringPredictor(args.model)
+    else:
+        predictor = _FixedPredictor(args.test_target)
+    server = InferenceServer(predictor, args.bind, args.port, key, args.timeout)
+    try:
+        server.start()
+        label = "CNN model" if args.model is not None else "FIXED TARGET TEST (not a driving model)"
+        print(f"Authenticated {label} server listening on {server.address[0]}:{server.address[1]}", flush=True)
+        while server.running:
+            time.sleep(0.25)
+        raise RuntimeError("inference listener stopped") from server.last_error
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        server.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
