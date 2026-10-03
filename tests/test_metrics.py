@@ -104,6 +104,17 @@ def test_empty_summary_is_json_safe_and_has_no_fabricated_scores():
     json.dumps(result, allow_nan=False)
 
 
+def test_large_finite_values_cannot_overflow_aggregate_json():
+    metrics = RunMetrics()
+    for i in range(3):
+        metrics.update(dict(status(i), actual_angle_deg=1e154, target_angle_deg=0,
+                            observation_age_ms=1e308))
+    result = metrics.summary()
+    assert result["tracking_rmse_deg"] == 1e154
+    assert result["latency"]["observation_age"]["mean_ms"] == 1e308
+    json.dumps(result, allow_nan=False)
+
+
 def test_report_cli_accepts_standalone_and_nested_summaries(tmp_path, capsys):
     metrics = RunMetrics()
     metrics.update(status(0))

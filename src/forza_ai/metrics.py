@@ -33,7 +33,7 @@ class _Histogram:
     def __init__(self):
         self.bins = [0] * (len(self.edges) + 1)
         self.count = 0
-        self.total = 0.0
+        self.mean = 0.0
         self.maximum = 0.0
 
     def add(self, value):
@@ -42,7 +42,7 @@ class _Histogram:
             return
         self.bins[bisect_left(self.edges, value)] += 1
         self.count += 1
-        self.total += value
+        self.mean += (value - self.mean) / self.count
         self.maximum = max(self.maximum, value)
 
     def percentile(self, fraction):
@@ -58,7 +58,7 @@ class _Histogram:
     def summary(self):
         return {
             "count": self.count,
-            "mean_ms": self.total / self.count if self.count else None,
+            "mean_ms": self.mean if self.count else None,
             "max_ms": self.maximum if self.count else None,
             "p50_ms": self.percentile(0.50),
             "p95_ms": self.percentile(0.95),
@@ -88,7 +88,7 @@ class RunMetrics:
         self._histograms = {name: _Histogram() for name in
                             ("control_tick_gap", "observation_age", "inference")}
         self._tracking_count = 0
-        self._tracking_squared_error = 0.0
+        self._tracking_mean_squared_error = 0.0
         self._max_abs_torque = 0.0
         self._out_of_order_ticks = 0
         self._fault_entries = 0
@@ -106,9 +106,9 @@ class RunMetrics:
     @staticmethod
     def _timestamp(value):
         # Preserve integer ns precision; no float round-trip for real timestamps.
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2 ** 63 - 1:
             return value
-        raise ValueError("timestamp_ns must be a nonnegative integer")
+        raise ValueError("timestamp_ns must be a nonnegative 64-bit integer")
 
     def _observe_time(self, timestamp_ns):
         self._start_ns = timestamp_ns if self._start_ns is None else min(self._start_ns, timestamp_ns)
@@ -146,8 +146,8 @@ class RunMetrics:
             difference = actual - target
             squared = difference * difference
             if math.isfinite(squared):
-                self._tracking_squared_error += squared
                 self._tracking_count += 1
+                self._tracking_mean_squared_error += (squared - self._tracking_mean_squared_error) / self._tracking_count
 
     def event(self, kind, timestamp_ns):
         if kind not in self.EVENTS:
@@ -190,7 +190,7 @@ class RunMetrics:
             "out_of_order_ticks_ignored": self._out_of_order_ticks,
             "ready_input_ticks": self._ready_ticks,
             "unavailable_input_ticks": self.ticks - self._ready_ticks,
-            "tracking_rmse_deg": math.sqrt(self._tracking_squared_error / self._tracking_count)
+            "tracking_rmse_deg": math.sqrt(self._tracking_mean_squared_error)
             if self._tracking_count else None,
             "tracking_samples": self._tracking_count,
             "max_abs_torque": self._max_abs_torque,

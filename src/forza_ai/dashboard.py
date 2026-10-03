@@ -30,7 +30,9 @@ def _safe(value, depth=0):
         return value
     if isinstance(value, str):
         return value[:256]
-    if isinstance(value, (int, float)):
+    if isinstance(value, int):
+        return value if abs(value) <= 2 ** 64 - 1 else None
+    if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, dict) and depth < 2:
         output = {}
@@ -150,7 +152,7 @@ class Dashboard:
                 if owner._read_only:
                     return self.reject(403, "dashboard is read-only")
                 token = self.headers.get("X-Forza-Token", "")
-                if not secrets.compare_digest(token, owner._token):
+                if not secrets.compare_digest(token.encode("utf-8"), owner._token.encode("ascii")):
                     return self.reject(403, "invalid dashboard token")
                 if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
                     return self.reject(415, "application/json required")

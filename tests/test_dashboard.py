@@ -84,7 +84,7 @@ def test_valid_events_only_queue_and_never_execute_hardware(dashboard):
 
 @pytest.mark.parametrize("headers", [
     {"Origin": "http://evil.example"}, {"Origin": "null"}, {"Host": "evil.example"},
-    {"X-Forza-Token": "wrong"}, {"Sec-Fetch-Site": "cross-site"},
+    {"X-Forza-Token": "wrong"}, {"X-Forza-Token": "é"}, {"Sec-Fetch-Site": "cross-site"},
 ])
 def test_cross_origin_csrf_and_host_are_rejected(dashboard, headers):
     with pytest.raises(HTTPError) as error:
