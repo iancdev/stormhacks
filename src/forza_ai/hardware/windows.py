@@ -117,9 +117,13 @@ class WindowsAdapter:
             if name is None:
                 raise self._sdl_error("SDL_JoystickNameForIndex")
             name = name.decode(errors="replace").lower()
-            if "vjoy" not in name and ("tmx" in name or "thrustmaster" in name):
+            # The tested calibration is TMX-specific, not shared by every
+            # Thrustmaster product discovered by the diagnostic script.
+            if "vjoy" not in name and "tmx" in name:
                 self._joystick = sdl.SDL_JoystickOpen(index)
                 break
+        else:
+            raise HardwareError("No TMX wheel found; other wheel models require their own calibration")
         if not self._joystick:
             raise self._sdl_error("Open TMX (plug in and power the wheel)")
         axes = sdl.SDL_JoystickNumAxes(self._joystick)
@@ -165,11 +169,20 @@ class WindowsAdapter:
         if self._closed:
             raise HardwareError("WindowsAdapter is closed")
 
+    @property
+    def button_count(self) -> int:
+        """Number of physical SDL buttons, for validating takeover bindings."""
+        return self._button_count
+
     def _attached(self) -> bool:
         return bool(self._sdl.SDL_JoystickGetAttached(self._joystick))
 
     def read_state(self, now_ns: int) -> WheelState:
-        """Poll the device; timestamp denotes host poll time, not a device clock."""
+        """Poll the device; timestamp denotes host poll time, not a device clock.
+
+        SDL's DirectInput backend can silently keep cached values after a failed
+        native poll. Attachment/error checks do not certify a fresh USB report.
+        """
         self._ensure_open()
         if type(now_ns) is not int or now_ns < 0:
             raise ValueError("now_ns must be nonnegative monotonic nanoseconds")

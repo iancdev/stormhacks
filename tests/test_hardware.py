@@ -189,6 +189,21 @@ class AdapterTests(unittest.TestCase):
         self.rig.buttons = {0, 3}
         self.assertEqual(adapter.read_state(123), WheelState(123, -450, 0, 1, (0, 3)))
 
+    def test_button_count_exposes_physical_count_read_only(self):
+        adapter = self.open()
+        self.assertEqual(adapter.button_count, 4)
+        with self.assertRaises(AttributeError):
+            adapter.button_count = 99
+
+    def test_uncalibrated_thrustmaster_models_are_not_opened(self):
+        self.rig.sdl.SDL_JoystickNameForIndex.side_effect = lambda index: [
+            b"vJoy", b"Thrustmaster T150"][index]
+        with self.assertRaisesRegex(HardwareError, "No TMX wheel found"):
+            self.rig.adapter()
+        self.rig.sdl.SDL_JoystickOpen.assert_not_called()
+        self.rig.sdl.SDL_HapticOpenFromJoystick.assert_not_called()
+        self.assertEqual(self.rig.sdl.SDL_QuitSubSystem.call_count, 2)
+
     def test_write_only_measured_state_and_explicit_button_map(self):
         adapter = self.open(button_map={0: 7, 3: 2})
         adapter.write_virtual_state(WheelState(123, 225, 0.25, 1, (0, 1)))
