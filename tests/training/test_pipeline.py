@@ -221,3 +221,63 @@ def test_stale_telemetry_at_future_interpolation_support(tmp_path):
     edit_csv(path / 'telemetry.csv', lambda rows: rows.__delitem__(slice(1, None)))
     result = load_session(path, Alignment(max_telemetry_age_ns=20_000_000))
     assert result.rejected == {'stale_telemetry': 1}
+
+
+@pytest.mark.parametrize('failure', ['before_last', 'before_best'])
+def test_interrupted_checkpoint_pair_recovers_best(data, tmp_path, monkeypatch, failure):
+    from forza_ai.training import engine
+    torch.set_num_threads(1)
+    run = tmp_path / 'run'
+    # Seed a completed epoch, then force the next epoch to improve.
+    metric_values = iter([3.0, 1.0, 2.0])
+    monkeypatch.setattr(engine, 'evaluate_model', lambda *args, **kwargs: {
+        'model': {'rmse_deg': next(metric_values)}})
+    train(data, run, epochs=1, config=TrainConfig(batch_size=8), device='cpu')
+    original_save = engine.atomic_save
+    old_best = load_checkpoint(run / 'best.pt')
+    def interrupt(value, path):
+        path = Path(path)
+        if value['epoch'] == 2 and path.name == ('last.pt' if failure == 'before_last' else 'best.pt'):
+            raise InterruptedError('simulated process interruption')
+        original_save(value, path)
+    monkeypatch.setattr(engine, 'atomic_save', interrupt)
+    with pytest.raises(InterruptedError):
+        train(data, run, epochs=2, resume=run / 'last.pt', device='cpu')
+    monkeypatch.setattr(engine, 'atomic_save', original_save)
+    last = load_checkpoint(run / 'last.pt')
+    assert last['epoch'] == (1 if failure == 'before_last' else 2)
+    # Stale best is repaired from last, even if resumed epoch is worse.
+    assert load_checkpoint(run / 'best.pt')['epoch'] == 1
+    train(data, run, epochs=last['epoch'] + 1, resume=run / 'last.pt', device='cpu')
+    best = load_checkpoint(run / 'best.pt')
+    if failure == 'before_best':
+        assert best['epoch'] == 2
+        assert best['best_rmse_deg'] == 1
+        for key, value in last['best_checkpoint']['model_state'].items():
+            torch.testing.assert_close(best['model_state'][key], value, rtol=0, atol=0)
+    else:
+        # Interrupted epoch 2 was not durable; repeating it can legitimately improve.
+        assert best['best_rmse_deg'] == 2
+    assert best['best_rmse_deg'] <= old_best['best_rmse_deg']
+
+
+def test_first_epoch_pair_interruption_repaired(data, tmp_path, monkeypatch):
+    from forza_ai.training import engine
+    torch.set_num_threads(1)
+    run = tmp_path / 'run'
+    metric_values = iter([1.0, 2.0])
+    monkeypatch.setattr(engine, 'evaluate_model', lambda *args, **kwargs: {
+        'model': {'rmse_deg': next(metric_values)}})
+    original_save = engine.atomic_save
+    def interrupt(value, path):
+        if Path(path).name == 'best.pt':
+            raise InterruptedError('first best publication interrupted')
+        original_save(value, path)
+    monkeypatch.setattr(engine, 'atomic_save', interrupt)
+    with pytest.raises(InterruptedError):
+        train(data, run, config=TrainConfig(batch_size=8), device='cpu')
+    assert not (run / 'best.pt').exists()
+    monkeypatch.setattr(engine, 'atomic_save', original_save)
+    train(data, run, epochs=2, resume=run / 'last.pt', device='cpu')
+    assert load_checkpoint(run / 'best.pt')['epoch'] == 1
+    assert load_checkpoint(run / 'last.pt')['epoch'] == 2
