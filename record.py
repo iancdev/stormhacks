@@ -112,6 +112,13 @@ def get_screen(args, cfg):
     return grab_screen(cfg["monitor"], args.delay)
 
 
+def front_window(name):
+    """Open an OpenCV window on top, so it doesn't hide behind Forza after the screen grab."""
+    cv2.namedWindow(name, cv2.WINDOW_AUTOSIZE)
+    cv2.setWindowProperty(name, cv2.WND_PROP_TOPMOST, 1)
+    return name
+
+
 def fit_scale(img, max_w=1600, max_h=850):
     h, w = img.shape[:2]
     return min(1.0, max_w / w, max_h / h)
@@ -127,7 +134,7 @@ def cmd_setup(args):
 
     print("\nStep 1: drag a box around the part of the screen to KEEP (road ahead).\n"
           "        Cut the sky at the top and the bonnet at the bottom. Enter/Space = accept, c = cancel.")
-    x, y, w, h = cv2.selectROI("1) crop: keep this area", disp, showCrosshair=False)
+    x, y, w, h = cv2.selectROI(front_window("1) crop: keep this area"), disp, showCrosshair=False)
     cv2.destroyAllWindows()
     if w == 0 or h == 0:
         sys.exit("No crop selected, config unchanged.")
@@ -138,7 +145,7 @@ def cmd_setup(args):
     crop_disp = cv2.resize(crop_img, None, fx=cs, fy=cs, interpolation=cv2.INTER_AREA)
     print("\nStep 2: drag a box over each HUD element still inside the crop (minimap, speedometer...).\n"
           "        Enter/Space after each box, Esc when done (Esc straight away = no masks).")
-    rects = cv2.selectROIs("2) masks: black these out", crop_disp, showCrosshair=False)
+    rects = cv2.selectROIs(front_window("2) masks: black these out"), crop_disp, showCrosshair=False)
     cv2.destroyAllWindows()
     masks = []
     for mx, my, mw, mh in (rects if len(rects) else []):
@@ -197,7 +204,7 @@ def show_preview(screen, cfg):
     cv2.imwrite(path, sheet)
     print(f"Preview saved to {path}. Check no HUD is left in the saved frame. Any key closes it.")
     s = fit_scale(sheet)
-    cv2.imshow("preview (any key closes)", cv2.resize(sheet, None, fx=s, fy=s, interpolation=cv2.INTER_AREA))
+    cv2.imshow(front_window("preview (any key closes)"), cv2.resize(sheet, None, fx=s, fy=s, interpolation=cv2.INTER_AREA))
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
