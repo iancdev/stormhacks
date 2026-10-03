@@ -1,0 +1,8 @@
+comtypes==1.4.17
+dxcam==0.3.0
+numpy==2.5.3
+opencv-python==5.0.0.93
+PySDL2==0.9.17
+pysdl2-dll==2.32.10
+pyvjoyffb==0.4
+pyzmq==27.2.0
