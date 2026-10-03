@@ -195,3 +195,56 @@ def test_stale_wheel_explanation_names_sample_age_without_diagnosing_disconnect(
     assert "control-loop timing" in result["detail"]
     assert "device connection" in result["detail"]
     assert "disconnected" not in result["detail"]
+
+
+def test_arm_acknowledgement_waits_for_a_subsequent_runtime_snapshot():
+    baseline = {"status": {"timestamp_ns": 10, "ticks": 1, "mode": "manual"}, "stale": False}
+    # An accepted request is insufficient; sending and unchanged snapshots stay pending.
+    expression = f"(()=>{{const before={json.dumps(baseline)};const a=makePendingAction('arm',before,0);const sending=actionOutcome(a,{{status:{{timestamp_ns:20,mode:'assist'}}}},1);a.phase='queued';const unchanged=actionOutcome(a,before,2);const confirmed=actionOutcome(a,{{status:{{timestamp_ns:20,mode:'assist'}},stale:false}},3);return {{sending,unchanged,confirmed}};}})()"
+    result = client(expression)
+    assert result["sending"]["done"] is False
+    assert result["unchanged"]["done"] is False
+    assert result["confirmed"]["done"] is True
+    assert result["confirmed"]["error"] is False
+    assert "engaged" in result["confirmed"]["message"]
+
+
+def test_manual_confirmation_requires_new_fresh_reported_mode():
+    expression = "(()=>{const a=makePendingAction('manual',{status:{timestamp_ns:10,ticks:5,mode:'assist'}},0);a.phase='queued';return [actionOutcome(a,{status:{timestamp_ns:10,mode:'takeover'}},1),actionOutcome(a,{status:{timestamp_ns:20,mode:'takeover'},stale:true},2),actionOutcome(a,{status:{timestamp_ns:20,mode:'takeover'},stale:false},3)];})()"
+    result = client(expression)
+    assert [value["done"] for value in result] == [False, False, True]
+    assert "disengaged" in result[-1]["message"]
+
+
+@pytest.mark.parametrize("event", ["route_start", "route_complete", "route_abort"])
+def test_route_confirmation_uses_the_matching_runtime_counter(event):
+    before = {"status": {"timestamp_ns": 10, "route_active": True,
+                          "metrics": {"events": {event: 3}}}, "stale": False}
+    after = {"status": {"timestamp_ns": 20, "route_active": False,
+                         "metrics": {"events": {event: 3}}}, "stale": False}
+    expression = f"(()=>{{const a=makePendingAction('{event}',{json.dumps(before)},0);a.phase='queued';const after={json.dumps(after)};const unrelated=actionOutcome(a,after,1);after.status.metrics.events['{event}']=4;return {{unrelated,confirmed:actionOutcome(a,after,2)}};}})()"
+    result = client(expression)
+    assert result["unrelated"]["done"] is False
+    assert result["confirmed"]["done"] is True
+    assert "recorded" in result["confirmed"]["message"]
+
+
+def test_confirmation_timeout_reports_reason_without_claiming_success():
+    expression = "(()=>{const a=makePendingAction('arm',{status:{timestamp_ns:10,mode:'manual'}},0);a.phase='queued';const after={status:{timestamp_ns:20,mode:'fault',reason:'stale_wheel'},stale:false};return {waiting:actionOutcome(a,after,7999),expired:actionOutcome(a,after,8000),offline:actionOutcome(a,after,8000,true)};})()"
+    result = client(expression)
+    assert result["waiting"]["done"] is False
+    assert result["expired"]["done"] and result["expired"]["error"]
+    assert "Not confirmed" in result["expired"]["message"]
+    assert "stale wheel" in result["expired"]["message"]
+    assert "unavailable" in result["offline"]["message"]
+
+
+def test_narrow_plot_time_ticks_remain_compact_and_do_not_mutate_history():
+    result = client("({small:timeTicks(350),large:timeTicks(700)})")
+    assert [tick["label"] for tick in result["small"]] == ["-18s", "-9s", "latest"]
+    assert len(result["large"]) == 5
+    assert all(len(tick["label"]) <= 6 for tick in result["large"])
+    rows = [{"timestamp_ns": 1_000_000_000, "actual_angle_deg": 0},
+            {"timestamp_ns": 1_100_000_000, "actual_angle_deg": 2}]
+    outcome = client(f"(()=>{{const rows={json.dumps(rows)};chartData(rows,['actual_angle_deg'],{{width:350}});return rows;}})()")
+    assert outcome == rows
