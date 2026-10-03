@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "role": "desktop",
+  "inference": {
+    "bind": null,
+    "port": 8765,
+    "timeout_s": 2.0
+  },
+  "policy": {
+    "kind": "fixed",
+    "target_angle_deg": 5
+  },
+  "run": {
+    "output_dir": "../runs"
+  }
+}

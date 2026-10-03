@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "role": "desktop",
+  "inference": {
+    "bind": null,
+    "port": 8765,
+    "timeout_s": 2.0
+  },
+  "policy": {
+    "kind": "model",
+    "model_path": null
+  },
+  "run": {
+    "output_dir": "../runs"
+  }
+}
