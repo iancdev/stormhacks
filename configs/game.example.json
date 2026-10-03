@@ -9,7 +9,7 @@
   },
   "capture": {
     "config_path": null,
-    "hz": 60,
+    "hz": 30,
     "game_process": "ForzaHorizon4.exe"
   },
   "buttons": {

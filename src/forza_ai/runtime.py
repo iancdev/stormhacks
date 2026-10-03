@@ -484,7 +484,7 @@ def main(argv=None):
     crop_selection.add_argument("--capture-config", type=Path,
                                 help="record.py capture.json: exact monitor, crop, masks, saved-size transform")
     parser.add_argument("--display", type=int, default=None, help="DXcam output index, for --crop only")
-    parser.add_argument("--capture-hz", type=float, default=60.0)
+    parser.add_argument("--capture-hz", type=float, default=30.0)
     parser.add_argument("--game-process", default="ForzaHorizon4.exe", help="foreground EXE required for live input")
     parser.add_argument("--status-csv", type=Path)
     parser.add_argument("--run-report", type=Path, help="bounded-memory metrics JSON, also for unlimited runs")
@@ -562,7 +562,11 @@ def main(argv=None):
     if args.record_session is not None:
         from forza_ai.recording import SessionRecorder
         recorder = SessionRecorder(args.record_session, metadata=dict(capture_metadata, policy=policy.name,
-                                                                     initial_manual_expert=args.record_manual))
+                                                                     initial_manual_expert=args.record_manual,
+                                                                     capture_target_hz=args.capture_hz,
+                                                                     wheel_poll_target_hz=args.control_hz,
+                                                                     policy_target_hz=args.policy_hz,
+                                                                     takeover_settle_ms=args.takeover_settle_ms))
     if args.backend == "windows":
         if args.takeover_button is None:
             parser.error("Windows runs require --takeover-button with your verified SDL button index")

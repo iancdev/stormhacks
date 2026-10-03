@@ -50,7 +50,7 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 
 ## Status / next
 - Hardware history: Python/VS Code, TMX calibration, FFB test, vJoy + registry flag, Forza wheel layout, Forza FFB reaches vJoy, telemetry packets arrive, HidHide installed with both python.exe paths allowed.
-- Implemented in this repo: offline training/export, actual-recorder import, live crop/mask preprocessing, local PD wheel control, takeover/expiry, LAN inference, foreground checks, telemetry, and simulated/loopback tests. `record.py` is the incoming recorder; its original behavior is preserved.
+- Implemented in this repo: offline training/export, actual-recorder import, live crop/mask preprocessing, local PD wheel control, takeover/expiry, LAN inference, foreground checks, telemetry, integrated correction recording, wheel re-arm/route buttons, local dashboard, reports, saved profiles/launchers, and simulated/loopback tests. `record.py` defaults to 30 fresh FPS with achieved-rate/timing reports while preserving legacy labels; explicit FPS overrides remain supported.
 - NEXT: user runs the stationary wheel sweep and two-PC fixed-target tests; transfer completed real recordings for training. Physical/native driver behavior and actual LAN/GPU execution remain unverified. Forza game-force replay/blending is a later feature; the current adapter commands only its own steering effect.
 
 ## Working rules

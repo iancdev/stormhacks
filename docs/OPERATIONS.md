@@ -98,7 +98,7 @@ Manual collection without a trained model:
 python -m forza_ai.runtime --backend windows --shadow --capture-config config/capture.json --takeover-button BUTTON_INDEX --record-session data/sessions/manual-001 --record-manual --duration 0 --dashboard-port 8766 --run-report runs/manual-001.json
 ```
 
-Capture targets 60 fresh frames/sec; inference remains independently paced.
+Capture defaults to 30 fresh frames/sec; inference remains independently paced.
 Actual achieved rates depend on the game, drivers, and storage. Sessions should
 span separate recording runs for independent train/validation groups.
 
@@ -121,9 +121,10 @@ python -m forza_ai.metrics report runs/run-001/report.json --json
 Saved profiles select it only when the run is suitably bounded. Cleanup faults
 and recorder completion status are included in the report.
 
-## Legacy recorder: fresh 60 FPS target
+## Legacy recorder: fresh 30 FPS default
 
-`python record.py record` now defaults to `--fps 60`. It uses paced one-shot
+`python record.py record` defaults to `--fps 30` per the latest user preference;
+explicit `--fps` overrides (including 60) remain supported. It uses paced one-shot
 `new_frame_only` capture and skips `None` results rather than reusing a cached
 image. `meta.json` reports measured fresh/saved FPS, elapsed time, gaps, inactive
 frames, and queue drops. Requested FPS is not a guarantee of achieved FPS.

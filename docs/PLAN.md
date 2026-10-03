@@ -10,7 +10,7 @@ Train a vision policy offline from human driving recordings, then continuously s
 
 1. **Training pipeline first:** chat `01a103b0-2b07-7c73-8934-0324136bc8f6` owns dataset validation/loading, training, evaluation, export, a portable inference wrapper, and the Colab fallback. It works in its own worktree and branch. Training setup now targets `DESKTOP-0HR4O88` first.
 2. **Adapter in parallel:** the originating chat owns hardware I/O, continuous steering control, telemetry, a placeholder policy, and runtime contracts. Windows-only packages must not be required to run training.
-3. **Data collection:** the user will provide real driving data later. The verified hardware reference is `utils/test.py`; the incoming recorder is now `record.py` (source behavior preserved). A compatible importer and matching live crop/mask transform are implemented. Real session files are still pending.
+3. **Data collection:** the user will provide real driving data later. The verified hardware reference is `utils/test.py`. The standalone `record.py` now defaults to 30 fresh FPS by the user's latest preference, with measured rates and a precise host-timing sidecar; explicit FPS overrides and legacy labels remain compatible. The runtime also has integrated stream-v1 recording for manual demonstrations and explicit human corrections. Real session files are still pending.
 
 The shared interface is documented in [CONTRACTS.md](CONTRACTS.md). Coordinate changes before diverging. Commit each implementation iteration. Do not commit recordings, credentials, or trained weights.
 
@@ -55,8 +55,20 @@ The wheel PC records frames, wheel inputs, telemetry, and control mode into comp
 - Training work delivered by the designated chat and integrated through `65d1917`: session validation/alignment, image-plus-speed CNN, resumable CLI, metrics/baselines, CPU export/predictor, executable Colab ZIP setup, synthetic notebook smoke, and interruption-safe best-checkpoint recovery. Real data and actual GPU/Colab execution remain outstanding.
 - Adapter software includes a PD controller, explicit engagement/takeover, command expiry, fixed and sweep test policies, simulated wheel, timestamped FH4 receiver with causal lookup, fresh DXcam capture, foreground-process checks, and local/remote exported-model integration. The LAN client sends authenticated lossless crops and speed to a desktop server, retains local source times, and rejects expired or incorrectly correlated replies. Physical Windows and two-PC acceptance remain outstanding; see [TWO_PC_SETUP.md](TWO_PC_SETUP.md).
 - The supplied baseline reference is NVIDIA's [End to End Learning for Self-Driving Cars](https://arxiv.org/abs/1604.07316). [TRAINING.md](TRAINING.md) documents our RGB preprocessing, speed input, and physical-angle output differences.
-- Latest combined validation on this Mac: **210 tests and 190 subtests passed**, including synthetic notebook execution, real TCP loopback image/angle transport, nonce/correlation checks, timeout/concurrent-close cases, remote predictions driving the simulated wheel, network-loss disengagement, capture/foreground/telemetry failure paths, exact recorder image-transform parity, and aligned-recording import/train/resume/export. No real dataset, desktop GPU setup, actual two-PC network, or physical wheel validation was performed here.
-- Incoming recorder `8e379da` was merged unchanged. Recorder import and archive compatibility were integrated through training branch commit `3f9a773`. `--capture-config config/capture.json` matches its crop, masks, monitor, and saved-size resize during live inference.
+- The data-independent product increment adds correction recording, live dashboard/metrics, profiles/launchers/doctor, wheel arm/route buttons, and fresh standalone recording, with focused and full-suite verification. The packaged CLI was installed and exercised, and dashboard engagement/takeover was verified in a browser using simulated hardware. No real dataset, desktop GPU setup, actual two-PC network, or physical wheel validation was performed here.
+- Latest full-suite result: **365 tests and 192 subtests passed** after the final 30 FPS default update. The standalone recorder's focused compatibility suite passed 52 tests and 49 subtests. Installed CLI entry points and the simulated browser dashboard were also checked.
+- Incoming recorder `8e379da` was initially merged unchanged. Fresh-frame/timing/shutdown fixes landed in `e065471`; the subsequent user-requested default of 30 FPS is in `70bb424`, preserving explicit overrides, legacy labels and importer compatibility. `--capture-config config/capture.json` matches its crop, masks, monitor, and saved-size resize during live inference.
+
+## Completed data-independent product work
+
+- Wheel-button arm and route markers use fresh rising edges; takeover has priority. Held buttons cannot re-engage after faults, and redundant arm requests cannot survive a disengagement.
+- The integrated bounded recorder writes stream-v1 data from the runtime's existing inputs. Only declared manual driving and explicit human takeover become expert labels. A settling interval starts after zero AI torque is sent and is checked against sample time; automatic timeout/fault states stay nonexpert.
+- A loopback-only operator dashboard shows state, angles, timing, recording, route markers and interventions. Controls queue runtime requests; they do not actuate hardware from HTTP threads. Simulated browser testing verified engage/takeover and route actions.
+- Bounded run metrics cover timing percentiles, tracking error, human interventions, mode duration, and manually marked route outcomes. Reports persist for unlimited runs and can be compared by CLI.
+- Validated per-machine profiles and PowerShell launchers support explicit setup checks, unique output directories, secret redaction, and a read-only dependency/CUDA/artifact doctor. Training handoffs remain in the existing Codex chats; no training orchestration service was added.
+- `record.py`, runtime capture, and example profiles default to a 30 FPS fresh-frame target. The standalone recorder measures achieved fresh/saved rates, gaps and drops; synthetic tests cannot establish actual Windows capture performance.
+
+See [OPERATIONS.md](OPERATIONS.md) and [configs/README.md](../configs/README.md).
 
 ## Next integration gates
 

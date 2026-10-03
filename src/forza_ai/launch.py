@@ -212,7 +212,7 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
         # This only parses numeric transforms, never opens capture or hardware.
         from forza_ai.capture_config import CaptureConfig
         CaptureConfig.from_json(capture_path)
-        capture_hz = _number(capture.get("hz", 60), "capture.hz", minimum=1, maximum=240)
+        capture_hz = _number(capture.get("hz", 30), "capture.hz", minimum=1, maximum=240)
         game_process = _text(capture.get("game_process", "ForzaHorizon4.exe"), "capture.game_process")
         if not game_process.lower().endswith(".exe") or any(c in game_process for c in "/\\\r\n"):
             raise ProfileError("capture.game_process must be an EXE basename")
