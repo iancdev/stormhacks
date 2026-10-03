@@ -8,9 +8,9 @@ Train a vision policy offline from human driving recordings, then continuously s
 
 ## Priorities and ownership
 
-1. **Training pipeline first:** chat `01a103b0-2b07-7c73-8934-0324136bc8f6` owns dataset validation/loading, training, evaluation, export, a portable inference wrapper, and Colab. It works in its own worktree and branch. It also owns project packaging and training dependencies.
+1. **Training pipeline first:** chat `01a103b0-2b07-7c73-8934-0324136bc8f6` owns dataset validation/loading, training, evaluation, export, a portable inference wrapper, and the Colab fallback. It works in its own worktree and branch. Training setup now targets `DESKTOP-0HR4O88` first.
 2. **Adapter in parallel:** the originating chat owns hardware I/O, continuous steering control, telemetry, a placeholder policy, and runtime contracts. Windows-only packages must not be required to run training.
-3. **Data collection:** the user will provide real driving data later. The verified hardware reference is `utils/test.py`. The user reports a successful short recording, but its recorder and session files are not in this repository yet. Preserve that result and integrate its format when available; do not assume the diagnostic script is a recorder.
+3. **Data collection:** the user will provide real driving data later. The verified hardware reference is `utils/test.py`. The standalone `record.py` now defaults to 30 fresh FPS by the user's latest preference, with measured rates and a precise host-timing sidecar; explicit FPS overrides and legacy labels remain compatible. The runtime also has integrated stream-v1 recording for manual demonstrations and explicit human corrections. Real session files are still pending.
 
 The shared interface is documented in [CONTRACTS.md](CONTRACTS.md). Coordinate changes before diverging. Commit each implementation iteration. Do not commit recordings, credentials, or trained weights.
 
@@ -38,7 +38,7 @@ First acceptance milestone: synthetic data validates, trains, and reloads a chec
 
 ## Data and deployment
 
-The gaming PC records frames, wheel inputs, telemetry, and control mode into completed sessions. GitHub stores code and tiny synthetic fixtures; session archives and checkpoints live on Drive or another user-chosen storage destination. GPU training consumes completed archives, validates them, and writes resumable checkpoints. Live inference initially runs on the gaming PC CPU, separate from the faster physical control loop.
+The wheel PC records frames, wheel inputs, telemetry, and control mode into completed sessions. The user confirmed on 2026-10-03 that the wheel is on a different PC from Codex's connected `DESKTOP-0HR4O88`, and selected that connected desktop for **both GPU training and live inference**. Colab remains a training fallback. GitHub stores code and tiny synthetic fixtures; session archives and checkpoints are transferred separately. GPU training consumes completed archives, validates them, and writes resumable checkpoints. The game PC sends road crops and causally matched speed over LAN; the desktop returns physical target angles. The fast physical controller, pedals, takeover, and stale-command shutdown remain on the wheel PC. No cross-machine clock comparison is used. Desktop GPU/PyTorch availability and real two-PC operation are not yet verified. See [TWO_PC_SETUP.md](TWO_PC_SETUP.md).
 
 ## Integration and verification
 
@@ -53,13 +53,59 @@ The gaming PC records frames, wheel inputs, telemetry, and control mode into com
 - Private repository created and pushed: `iancdev/stormhacks`.
 - Hardware diagnostic and pinned Windows dependencies received in commit `d18ec40`.
 - Training work delivered by the designated chat and integrated through `65d1917`: session validation/alignment, image-plus-speed CNN, resumable CLI, metrics/baselines, CPU export/predictor, executable Colab ZIP setup, synthetic notebook smoke, and interruption-safe best-checkpoint recovery. Real data and actual GPU/Colab execution remain outstanding.
-- Adapter software now includes a PD controller, explicit engagement/takeover, command expiry, separate placeholder policy worker, simulated wheel, and a timestamped FH4 receiver. The first simulated three-second run reached a five-degree target while forwarding measured angles. Physical Windows acceptance is still outstanding; see [ADAPTER.md](ADAPTER.md).
+- Adapter software includes a PD controller, explicit engagement/takeover, command expiry, fixed and sweep test policies, simulated wheel, timestamped FH4 receiver with causal lookup, fresh DXcam capture, foreground-process checks, and local/remote exported-model integration. The LAN client sends authenticated lossless crops and speed to a desktop server, retains local source times, and rejects expired or incorrectly correlated replies. Physical Windows and two-PC acceptance remain outstanding; see [TWO_PC_SETUP.md](TWO_PC_SETUP.md).
 - The supplied baseline reference is NVIDIA's [End to End Learning for Self-Driving Cars](https://arxiv.org/abs/1604.07316). [TRAINING.md](TRAINING.md) documents our RGB preprocessing, speed input, and physical-angle output differences.
-- Combined validation on this Mac: 89 tests and 60 subtests passed, including local execution of the notebook's synthetic data/train/evaluate/export cells. No real dataset, GPU training, Google authentication, or physical wheel validation was performed here.
+- The data-independent product increment adds correction recording, live dashboard/metrics, profiles/launchers/doctor, wheel arm/route buttons, and fresh standalone recording, with focused and full-suite verification. The packaged CLI was installed and exercised, and dashboard engagement/takeover was verified in a browser using simulated hardware. No real dataset, desktop GPU setup, actual two-PC network, or physical wheel validation was performed here.
+- Latest full-suite result: **365 tests and 192 subtests passed** after the final 30 FPS default update. The standalone recorder's focused compatibility suite passed 52 tests and 49 subtests. Installed CLI entry points and the simulated browser dashboard were also checked.
+- Incoming recorder `8e379da` was initially merged unchanged. Fresh-frame/timing/shutdown fixes landed in `e065471`; the subsequent user-requested default of 30 FPS is in `70bb424`, preserving explicit overrides, legacy labels and importer compatibility. `--capture-config config/capture.json` matches its crop, masks, monitor, and saved-size resize during live inference.
+
+## Completed data-independent product work
+
+- Wheel-button arm and route markers use fresh rising edges; takeover has priority. Held buttons cannot re-engage after faults, and redundant arm requests cannot survive a disengagement.
+- The integrated bounded recorder writes stream-v1 data from the runtime's existing inputs. Only declared manual driving and explicit human takeover become expert labels. A settling interval starts after zero AI torque is sent and is checked against sample time; automatic timeout/fault states stay nonexpert.
+- A loopback-only operator dashboard shows state, angles, timing, recording, route markers and interventions. Controls queue runtime requests; they do not actuate hardware from HTTP threads. Simulated browser testing verified engage/takeover and route actions.
+- Bounded run metrics cover timing percentiles, tracking error, human interventions, mode duration, and manually marked route outcomes. Reports persist for unlimited runs and can be compared by CLI.
+- Validated per-machine profiles and PowerShell launchers support explicit setup checks, unique output directories, secret redaction, and a read-only dependency/CUDA/artifact doctor. Training handoffs remain in the existing Codex chats; no training orchestration service was added.
+- `record.py`, runtime capture, and example profiles default to a 30 FPS fresh-frame target. The standalone recorder measures achieved fresh/saved rates, gaps and drops; synthetic tests cannot establish actual Windows capture performance.
+
+See [OPERATIONS.md](OPERATIONS.md) and [configs/README.md](../configs/README.md).
+
+## Harness review and dashboard refinement
+
+The review of `7a9f425` confirmed four defects, detailed with reproductions
+in [HARNESS_REVIEW.md](HARNESS_REVIEW.md): native actuation after command expiry
+(P1), unlatched transient inference failure (P1), missing standalone-recorder
+attachment checks (P2), and launcher Ctrl+C interrupting cleanup (P2). These
+control/data fixes were initially reported separately from the dashboard work,
+then explicitly authorized and implemented: native deadlines (`53d76e2`), sticky
+policy failure generations (`3557c73`), standalone wheel detachment (`bef8f09`),
+and runtime/graceful-launch integration (`406fbe9`). All four now have focused
+regressions and follow-up review. Actual hardware/Windows acceptance remains.
+
+The dashboard was separately redesigned with measured pipeline rates, three
+time-based charts, contextual states, recording/evaluation panels, a sticky
+disengagement action, and runtime-confirmed request feedback. Verified in a
+browser at desktop and 390px width with synthetic signals; no horizontal overflow
+was observed. Current full software suite: **401 tests and 192 subtests passed**.
+The original reproductions are retained in the review report along with their
+implemented fixes and verification limits.
+
+The training owner also supplied `5587452`, now integrated: narrowly bounded
+legacy Ctrl+C empty-tail compatibility and read-only diagnostic inspection of
+known extended CSV fields. Diagnostic objects cannot enter production splits.
+The coordinating chat reports an isolated CUDA smoke on the supplied sample;
+that does not establish production import compatibility or driving quality.
+The actual extended producer schema remains gated pending its source/context.
+
+Latest integrated verification after all harness fixes and `5587452` integration:
+**445 tests and 192 subtests passed**. Native deadline propagation and transient
+failure consumption received follow-up review; launcher regressions include
+real graceful child shutdown and repeated parent interrupts. Actual Windows
+motor/console behavior and real LAN acceptance remain separate gates.
 
 ## Next integration gates
 
-1. Obtain the existing recorder/sample schema and adapt it to version 1. Sessions require `completed: true` once fully written/transferred; preserve source timestamps and separate human corrections from AI motion.
-2. User runs the notebook synthetic path on Colab, then supplies completed real sessions for GPU training. No real training is scheduled or started automatically.
+1. Collect at least two independent completed recordings. Import `record.py` output with `import-recording SOURCE DEST --expert-mode manual`, then validate. The importer preserves rounded aligned-label timing provenance and whole-recording split groups; it does not fabricate precise capture timestamps. Stream-based v1 sessions remain supported separately.
+2. Set up the portable training CLI on `DESKTOP-0HR4O88`, verify CUDA availability, then transfer completed real sessions for training. Colab notebook is a fallback. No real training is scheduled or started automatically.
 3. User runs the Windows acceptance procedure for passthrough, +/-5-degree stationary tracking, takeover, expiry, and cleanup. Tune PD gains only against observed hardware behavior.
-4. Connect real capture plus `SteeringPredictor` to the runtime in shadow mode, preserving the frame's capture time through inference. Road-force replay remains a later independent increment.
+4. Live capture, telemetry matching, local model wrapper, and LAN inference client/server are implemented. Verify the small fixed-target network path first, then load the exported real policy on the desktop and run shadow mode with source capture times preserved. Road-force replay remains a later independent increment.

@@ -14,8 +14,10 @@ A driving AI for Forza Horizon 4 that learns from human demonstrations and physi
 ## Architecture
 
 ```text
-Forza image + speed → CNN → target wheel angle → torque controller → TMX motor
-Forza ← vJoy ← measured TMX angle + human pedal inputs
+Game/wheel PC: road crop + speed → LAN → Desktop: CNN inference
+Game/wheel PC: physical controller ← LAN ← Desktop: target angle
+Physical controller → TMX motor → measured angle → vJoy → Forza
+Human pedals → vJoy → Forza
 ```
 
 The physical wheel remains in the steering loop. Direct model-to-vJoy steering can serve as a separate software baseline.
@@ -33,17 +35,21 @@ Windows gaming PC, Forza Horizon 4, Thrustmaster TMX and pedals, Python, PySDL2,
 5. Test closed-loop driving, collect marked human corrections, and retrain.
 6. Prepare a demo showing completion rate, interventions per minute, and steering stability.
 
-Overtaking, navigation, reinforcement learning, and network-separated inference are future extensions.
+Overtaking, navigation, and reinforcement learning are future extensions.
 
 ## Status
 
-The tested hardware diagnostic is in `utils/test.py`. The offline training pipeline and physical adapter are implemented. Synthetic sessions exercise validation, training, resume, evaluation, and portable export. The adapter can run its controller and placeholder policy against simulated hardware. No real dataset has been supplied, no GPU/Colab run has been verified, and Windows motor control still requires hardware acceptance. The user reports a verified short recording, but its recorder and session files are not in this checkout yet.
+The tested hardware diagnostic is in `utils/test.py`. Training, recorder import, physical control, matching capture, LAN inference, wheel re-engagement, integrated correction recording, a local dashboard, run reports, and saved two-PC profiles are implemented. `record.py` targets 30 fresh FPS by the user's latest preference and reports measured performance. The desktop trains and serves predictions; the game/wheel PC captures input and controls the wheel locally. Real sessions are pending, and actual Windows movement, desktop GPU, and two-PC operation still require acceptance.
 
 - [Durable delivery plan and ownership](docs/PLAN.md)
 - [Shared recording and model contracts](docs/CONTRACTS.md)
 - [Adapter usage and Windows acceptance](docs/ADAPTER.md)
 - [Training, dataset transfer, and inference](docs/TRAINING.md)
 - [Colab notebook](notebooks/train_colab.ipynb)
+- [Primary two-PC setup: desktop training/inference and game/wheel control](docs/TWO_PC_SETUP.md)
+- [Operator controls, dashboard, correction recording, and reports](docs/OPERATIONS.md)
+- [Saved deployment profiles and launchers](configs/README.md)
+- [Harness review and verified fixes](docs/HARNESS_REVIEW.md) — all four confirmed code findings addressed; hardware acceptance remains.
 
 ## Start training development
 

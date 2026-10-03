@@ -12,6 +12,7 @@ import socket
 import struct
 import threading
 import time
+from collections import deque
 
 from .contracts import VehicleState
 
@@ -89,6 +90,7 @@ class TelemetryReceiver:
         self._thread: threading.Thread | None = None
         self._address: tuple[str, int] | None = None
         self._state: VehicleState | None = None
+        self._history = deque(maxlen=512)
         self._running = False
         self._malformed_count = 0
         self._out_of_order_count = 0
@@ -132,6 +134,7 @@ class TelemetryReceiver:
             with self._lock:
                 self._address = sock.getsockname()
                 self._state = None
+                self._history.clear()
                 self._last_error = None
                 self._running = True
             self._socket = sock
@@ -164,6 +167,22 @@ class TelemetryReceiver:
             return None
         return state
 
+    def at_or_before(self, timestamp_ns: int, max_age_ns: int = 100_000_000) -> VehicleState | None:
+        """Causal speed input for a captured frame; never use a newer packet.
+
+        Timestamp is the frame's host capture time, not the game clock. History
+        is bounded and cleared across receiver restarts/game ordering resets.
+        """
+        _nonnegative_ns(timestamp_ns, "timestamp_ns")
+        _nonnegative_ns(max_age_ns, "max_age_ns")
+        with self._lock:
+            if not self._running:
+                return None
+            for state in reversed(self._history):
+                if state.timestamp_ns <= timestamp_ns:
+                    return state if timestamp_ns - state.timestamp_ns <= max_age_ns else None
+        return None
+
     def close(self) -> None:
         with self._lifecycle_lock:
             self._stop.set()
@@ -180,6 +199,7 @@ class TelemetryReceiver:
             with self._lock:
                 self._address = None
                 self._state = None
+                self._history.clear()
 
     def _receive(self, sock: socket.socket) -> None:
         try:
@@ -204,6 +224,8 @@ class TelemetryReceiver:
                     continue
                 with self._lock:
                     previous = self._state
+                    if previous is not None and received_ns - previous.timestamp_ns > self._ordering_reset_ns:
+                        self._history.clear()
                     if (
                         previous is not None
                         and received_ns - previous.timestamp_ns <= self._ordering_reset_ns
@@ -213,6 +235,7 @@ class TelemetryReceiver:
                             self._out_of_order_count += 1
                             continue
                     self._state = state
+                    self._history.append(state)
         finally:
             sock.close()
             with self._lock:

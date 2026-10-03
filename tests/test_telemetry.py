@@ -94,6 +94,19 @@ class ReceiverTests(unittest.TestCase):
         self.assertIs(self.receiver.latest(max_age_ns=2_000_000_000), state)
         self.assertIsNone(self.receiver.last_error)
 
+    def test_frame_lookup_uses_past_sample_and_respects_age(self):
+        self.send(packet(game_ms=1, speed=10))
+        first = self.wait_for(self.receiver.latest)
+        frame_time = time.monotonic_ns()
+        self.send(packet(game_ms=2, speed=30))
+        second = self.wait_for(lambda: (s if (s := self.receiver.latest()) and s.game_timestamp_ms == 2 else None))
+        self.assertIs(self.receiver.at_or_before(frame_time), first)
+        self.assertIs(self.receiver.at_or_before(second.timestamp_ns), second)
+        self.assertIsNone(self.receiver.at_or_before(first.timestamp_ns - 1))
+        self.assertIsNone(self.receiver.at_or_before(second.timestamp_ns + 101, max_age_ns=100))
+        self.receiver.close()
+        self.assertIsNone(self.receiver.at_or_before(frame_time))
+
     def test_duplicate_backward_and_wrapping_timestamps(self):
         self.send(packet(game_ms=0xFFFFFFFE))
         first = self.wait_for(self.receiver.latest)

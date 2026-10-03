@@ -1,5 +1,10 @@
 # Forza AI Wheel: project context
 
+Current implementation and deployment status are in `docs/PLAN.md` and
+`docs/TWO_PC_SETUP.md`; those documents supersede the original setup milestones
+below. Both training and inference now target DESKTOP-0HR4O88 over LAN, while
+Forza, capture, pedals, and physical wheel control run on a different Windows PC.
+
 Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (Steam)** by physically turning a **Thrustmaster TMX** force-feedback wheel. The human keeps the pedals and can grab the wheel to override at any time.
 
 ## Architecture (decided)
@@ -7,9 +12,9 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 - **Body:** PID loop turns the target angle into motor torque via force feedback. The game only ever sees the wheel angle.
 - **vJoy passthrough:** Forza is bound only to the virtual vJoy wheel. Our Python script:
   1. reads the real TMX (PySDL2) and writes steering/pedals to vJoy (pyvjoyffb),
-  2. receives Forza's FFB from vJoy and forwards it, plus the AI torque, to the TMX motor (capped, with a kill switch).
+  2. drives the TMX motor toward AI targets with capped torque and takeover. Receiving/replaying Forza's own road forces and blending them is a later feature.
 - **HidHide** hides the TMX from everything except python.exe, so Forza only sees vJoy.
-- Inference runs on CPU during live driving so Forza keeps the GPU (GTX 1650, 4 GB). Training on GPU, possibly on the laptop (RTX 3050).
+- Inference runs on the separate desktop; the game PC sends authenticated road crops/speed and keeps the physical control loop local. Training also targets the desktop GPU after verifying its CUDA setup.
 
 ## Machine
 - Project folder: `C:\Users\Administrator\ForzaTest`, venv `.venv` (Python 3.12).
@@ -44,16 +49,18 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 - Read-only code must set `SDL_HINT_DIRECTINPUT_ENABLED=0` and `SDL_HINT_JOYSTICK_RAWINPUT=1` before `SDL_Init`, then poll `SDL_JoystickUpdate` for up to ~3 s until the device appears. Under RawInput the TMX is named "Thrustmaster TMX", vJoy "HID-compliant game controller"; axes a0/a1/a2 are the same as above. Verified: reads with Forza focused, FFB unaffected.
 - `utils/test.py` (old check.py) still uses DirectInput: only run it with Forza closed.
 
-## Data collection plan
+## Original data collection plan (see current contracts before use)
 - Solo circuit (Rivals/time attack, ghost off if possible), one mid-range B/A-class car, automatic gears, bonnet camera, HUD off, racing line off, lens effects off.
 - One loop iteration = frame + wheel + latest telemetry + one timestamp. Crop sky/bonnet, resize ~200×66. Shift labels ~100–200 ms later (tune). Check frame-gap histogram before long recordings. Balance near-straight frames.
 - 1–2 h base laps → train → DAgger rounds (AI drives, human corrects) → test on an unseen circuit.
 
 ## Status / next
-- DONE: Python/VS Code, TMX calibration, FFB test, vJoy + registry flag, Forza wheel layout, Forza FFB reaches vJoy, telemetry packets arrive, HidHide installed with both python.exe paths allowed.
-- DONE (this repo): venv `.venv` + `requirements.txt`; `record.py` (setup/preview crop, record, wheel); `sync_check.py`. Crop in `config/capture.json`: full width, y 330–725, saved 320×66, no masks. Rivals online works with no ghost. First session 20261003_150225 (51 s, ends in a crash; drop last 5 s).
-- Recorder behaviour: frames held `--drop-seconds` (5) before writing; rewind (race clock backwards, or `--rewind-button`) and Ctrl+C discard them. Records only while IsRaceOn=1. Saves hud/ gear patch for sync_check.
-- NEXT: record a session with gear shifts and run `sync_check.py` (screen-vs-telemetry lag); confirm the rewind watchdog on a real rewind; then the passthrough script (TMX → vJoy, Forza constant force → TMX motor, sign to calibrate; consider cancelling Forza FFB in the AI torque).
+- Hardware history: Python/VS Code, TMX calibration, FFB test, vJoy + registry flag, Forza wheel layout, Forza FFB reaches vJoy, telemetry packets arrive, HidHide installed with both python.exe paths allowed.
+- Implemented in this repo: offline training/export, actual-recorder import, live crop/mask preprocessing, local PD wheel control, takeover/expiry, LAN inference, foreground checks, telemetry, integrated correction recording, wheel re-arm/route buttons, local dashboard, reports, saved profiles/launchers, and simulated/loopback tests.
+- Recorder (`record.py`, the local version was kept over the remote rewrite in the merge): setup/preview crop, record, wheel; RawInput TMX reading (keeps Forza FFB alive); frames held `--drop-seconds` (5) before writing; rewind (race clock backwards, or `--rewind-button`), game takeover (telemetry steer stops following the wheel) and Ctrl+C discard them; records only while IsRaceOn=1; logs race_time, distance, yaw_rate, game_ms, gear, car_ordinal/class/pi; saves hud/ gear patch. `sync_check.py` measured the screen 66 ms (2 frames) behind telemetry; `review.py` flags frames to skip; `config/exclude_sessions.txt` lists sessions left out. Crop in `config/capture.json`: full width, y 330-725, saved 320x66, no masks.
+- Recorded so far (game PC, data/recordings): 152944 (1 lap), 154540 (~19 min, 7 rewinds), 162649 (~2.6 min, 2 rewinds); car 2473 (2016 Audi R8 V10 Plus, S2 963). 150225 and 152123 excluded.
+- Known gap after the merge: the remote's recorder tests (tests/test_legacy_recorder_capture.py, tests/test_recorder_detach.py) and importer (src/forza_ai/data/recording.py) were written against the remote record.py; local recordings have frame-number gaps after rewinds and car_* columns the importer does not accept yet.
+- NEXT: user runs the stationary wheel sweep and two-PC fixed-target tests; reconcile the importer/tests with the local recorder; transfer completed real recordings for training. Physical/native driver behavior and actual LAN/GPU execution remain unverified. Forza game-force replay/blending is a later feature; the current adapter commands only its own steering effect.
 
 ## Working rules
 - Test FFB with no game, and vJoy passthrough with no AI. Never debug both at once.

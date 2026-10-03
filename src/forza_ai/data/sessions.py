@@ -2,7 +2,7 @@
 from bisect import bisect_left, bisect_right
 from collections import Counter
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import math
@@ -42,10 +42,17 @@ class Session:
     samples: list[Sample]
     rejected: dict[str, int]
     fingerprint: str
+    split_group: str | None = None
+    provenance: dict = field(default_factory=dict)
+
+    @property
+    def group(self):
+        return self.split_group or self.session_id
 
     def summary(self):
         return {"session_id": self.session_id, "accepted": len(self.samples),
-                "rejected": self.rejected, "fingerprint": self.fingerprint}
+                "rejected": self.rejected, "fingerprint": self.fingerprint,
+                "split_group": self.group, "provenance": self.provenance}
 
 
 def _rows(path, required, timestamp):
@@ -76,6 +83,12 @@ def _number(row, key, low, high):
 def load_session(path: Path, alignment: Alignment = Alignment()) -> Session:
     path = Path(path).resolve()
     metadata = json.loads((path / "metadata.json").read_text())
+    if metadata.get('schema_version') == 'record_py_aligned_v1':
+        from forza_ai.data.recording import load_recording
+        return load_recording(path, metadata, alignment)
+    group = metadata.get('split_group')
+    if group is not None and (not isinstance(group, str) or not group.strip()):
+        raise ValueError('split_group must be a nonempty string')
     expected = {"schema_version": 1, "clock": "monotonic_ns", "image_stage": "road_crop",
                 "wheel_rotation_deg": 900, "completed": True}
     for key, value in expected.items():
@@ -164,7 +177,8 @@ def load_session(path: Path, alignment: Alignment = Alignment()) -> Session:
             angle = wheel[left]['angle_deg'] * (1 - weight) + wheel[right]['angle_deg'] * weight
         speed = telemetry[bisect_right(tt, captured) - 1]['speed_mps']
         accepted.append(Sample(image, captured, angle, speed, mode))
-    return Session(path, session_id, accepted, dict(rejected), digest.hexdigest())
+    return Session(path, session_id, accepted, dict(rejected), digest.hexdigest(), group,
+                   {'format': 'session_v1', 'clock': 'monotonic_ns'})
 
 
 def load_sessions(root: Path, alignment: Alignment = Alignment()) -> list[Session]:
@@ -180,12 +194,17 @@ def load_sessions(root: Path, alignment: Alignment = Alignment()) -> list[Sessio
 
 
 def split_sessions(sessions: list[Session], validation_fraction: float, seed: int):
-    if not 0 < validation_fraction < 1 or len(sessions) < 2:
-        raise ValueError("need at least two sessions and 0 < validation_fraction < 1")
+    if any(session.provenance.get('diagnostic_only') for session in sessions):
+        raise ValueError('diagnostic-only recordings cannot enter production train/validation splits')
+    groups = sorted({session.group for session in sessions})
+    if not 0 < validation_fraction < 1 or len(groups) < 2:
+        raise ValueError("need at least two independent session groups and 0 < validation_fraction < 1")
+    random.Random(seed).shuffle(groups)
+    count = min(len(groups) - 1, max(1, math.ceil(len(groups) * validation_fraction)))
+    held_out = set(groups[:count])
     ordered = sorted(sessions, key=lambda s: s.session_id)
-    random.Random(seed).shuffle(ordered)
-    count = min(len(ordered) - 1, max(1, math.ceil(len(ordered) * validation_fraction)))
-    validation, train = ordered[:count], ordered[count:]
+    validation = [session for session in ordered if session.group in held_out]
+    train = [session for session in ordered if session.group not in held_out]
     if any(not s.samples for s in sessions):
         raise ValueError("every session must have accepted samples; inspect validation report")
     return train, validation

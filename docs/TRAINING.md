@@ -6,7 +6,11 @@ real-world driving-quality result yet.
 
 ## Installation
 
-Use Python 3.10+ on Colab or another training machine. Install a CUDA-compatible
+The primary training host is the connected Windows desktop `DESKTOP-0HR4O88`;
+it also serves live inference over LAN to the separate game/wheel PC. See
+[TWO_PC_SETUP.md](TWO_PC_SETUP.md). Colab remains a fallback.
+
+Use Python 3.10+ on the desktop, Colab, or another training machine. Install a CUDA-compatible
 PyTorch build appropriate for that host, then run from the repository root:
 
 ```bash
@@ -153,3 +157,138 @@ Set `RESUME = True` and a higher total `EPOCHS` to continue. Export folders incl
 the target epoch count and a unique suffix, including repeated evaluations of the
 same epoch. Notebook cells are locally smoke-tested, but Google authentication,
 Drive mounting, and GPU execution still require validation in Colab.
+
+## Import recordings from `record.py`
+
+The recorder added in `8e379da` writes `meta.json`, `labels.csv`, and JPEGs under
+`frames/`. Import each **normally stopped, fully copied** recording explicitly:
+
+```bash
+forza-train import-recording /path/to/recording /path/to/dataset/drive-001 --expert-mode manual
+forza-train import-recording /path/to/another-recording /path/to/dataset/drive-002 --expert-mode manual
+forza-train validate /path/to/dataset
+forza-train train /path/to/dataset /path/to/run --device cuda --epochs 10
+```
+
+On Windows the same commands accept quoted Windows paths. Only the normal
+training dependencies are needed; the importer does not import the recorder,
+OpenCV, wheel drivers, or other Windows hardware packages. `--expert-mode manual`
+declares that the entire source recording contains human steering demonstrations.
+Do not use it for AI-generated steering; this recorder does not log control mode.
+Source files are never edited and an existing destination is never overwritten.
+
+The importer retains original `labels.csv`, `meta.json`, and JPEG bytes. It adds
+`metadata.json` identifying the **distinct `record_py_aligned_v1` format**. It does
+not manufacture v1 wheel/telemetry streams or claim exact capture timestamps.
+The existing training CLI recognizes this format alongside v1 sessions.
+
+Completion is inferred conservatively from `meta.json` (written after the
+recorder's normal writer closure), matching row/image/frame counts, segment
+counts, ordered frame indexes, decodable JPEG dimensions, and valid values.
+Missing/corrupt images, extra files in `frames/`, inconsistent counts, absent
+metadata, invalid calibration, or `--no-telemetry` recordings fail import.
+An arbitrary exception or a partial copy is not silently treated as completed.
+There is no partial-recording recovery mode. Preserve the source and investigate
+or recopy it rather than inventing completion metadata.
+
+**Timing limitation:** `t` is elapsed `perf_counter` sampled after
+`get_latest_frame()` returns, rounded to 0.0001 seconds. It is not capture time.
+`video_mode=True` can return cached images, so image age has **no certified upper
+bound**. Wheel/telemetry ages are rounded to 0.1 ms, wheel angle to 0.01 degrees,
+and speed to 0.001 m/s. Validation summaries, checkpoints, and exports preserve
+this provenance, capture configuration, saved dimensions, and unknown image-age
+bound. Internal integer nanosecond representation of `t` remains quantized to
+100,000 ns; it adds no timestamp precision.
+
+Labels and speed are used only as already recorded on each row. **Only zero label
+offset is supported**; no interpolation or label shifting occurs within or across
+segments. Repeated wheel/telemetry observations are not reconstructed into fake
+unique source samples from independently rounded times and ages. The maximum
+wheel-gap setting is interpreted as maximum wheel **age** for this aligned format;
+the telemetry-age setting keeps its age meaning. Eligibility uses the upper end
+of each age's ±0.05 ms rounding interval. An age of 50.0 ms therefore exceeds a
+50 ms limit. Zero/negative rounded ages cannot certify that the sampled value
+existed at retrieval and are excluded, as are race-off rows. Consecutive identical
+JPEGs or repeated rounded retrieval times are excluded and counted; this cannot
+detect every stale/cached image or establish a true capture-age bound.
+
+All segments of one parent recording remain a **single session and split group**.
+At least two independent parent recordings are required for train/validation;
+multiple segments in one recording are not independent held-out data. The
+splitter also honors optional `split_group` in v1 metadata, keeping related
+sessions together. Evaluation with `--unseen` rejects groups from the original
+run even if their session IDs differ. Parent identity derives from the recorder's
+`session` field; renaming directories does not create an independent recording.
+Do not relabel/copy subsets as independent recordings to obtain a split.
+
+The saved road images are already cropped, masked and resized using the recorder's
+OpenCV `INTER_AREA` transform. Import copies them unchanged; model preprocessing
+still applies the exported RGB/Pillow bilinear 200×66 transform. For live parity,
+configure the runtime with that recording's exact capture configuration and saved
+size before model preprocessing. No real recording or driving result is implied
+by the synthetic import tests.
+
+A normally closed recorder can report empty segments: it increments the segment
+before enqueueing a frame, and `queue.Full` can drop every frame in that segment,
+including a final resumed segment. Import accepts absent segment IDs only when
+the recorded `dropped` count supplies at least one dropped frame per empty
+segment. Segment IDs must still be ordered and within the declared count. This
+check admits that recorder behavior without inventing samples or accepting an
+unexplained mismatch in completion metadata.
+
+### Original Ctrl+C segment edge and diagnostic-only inspection
+
+The original `8e379da` recorder increments `segment` before processing/enqueueing
+the frame. A `KeyboardInterrupt` during that processing is caught as a normal
+stop, but neither a frame nor a queue-full drop has been counted. Replaying the
+actual historical loop with inert dependencies reproduced one saved segment,
+`segments=2`, `dropped=0`, and normal cleanup. Import therefore permits **at most
+one additional unaccounted trailing segment**, only for the original exact
+metadata-key shape and original CSV columns. Other empty segments still require
+recorded drops. Later/extended producer metadata does not receive this exception;
+its segment semantics must be established from its source. Accepted legacy
+imports report the Ctrl+C caveat in `empty_segment_evidence`.
+
+The supplied `smoke_20261003_152944.zip` (13,689,689 bytes; SHA-256
+`7829b5458609202f8ddd970ed0d789800a1347e775cbb0360234a10f214fbaeb`)
+is **not that exact tracked producer format**. It has extra `race_time`, `distance`,
+`yaw_rate`, `game_ms`, and `gear` columns, plus metadata such as
+`discarded_at_stop=5`, `drop_seconds`, and rewind counters. Its corresponding
+producer source is absent from the inspected Git history. It remains rejected by
+strict import; neither the original Ctrl+C possibility nor the discard counter
+proves the semantics of its empty final segment. Those extra telemetry fields are
+not model inputs and their units are not inferred or rescaled.
+
+A separate read-only API permits explicitly diagnostic offline work on that
+unchanged source. It tolerates only those named additive columns and unexplained
+empty-segment counts, records the discrepancies, and continues to enforce image
+integrity, row counts/order/ranges, calibration, and rounded-age eligibility:
+
+```python
+from forza_ai.data.recording import inspect_recording_for_diagnostics
+from forza_ai.data.dataset import SteeringDataset
+from forza_ai.policies.steering_model import Preprocessing
+
+session = inspect_recording_for_diagnostics(
+    r"C:\path\to\unchanged\raw", expert_mode="manual"
+)
+print(session.summary())
+assert session.provenance["diagnostic_only"]
+assert not session.provenance["production_validation_passed"]
+dataset = SteeringDataset([session], Preprocessing())
+# A separately bounded offline runner may now consume dataset batches.
+# This API itself performs no training and writes no session/metadata files.
+```
+
+The exact sample inspection found 1,988 eligible rows and 9 excluded for ambiguous
+or future rounded ages, with both strict-validation issues retained in provenance.
+The session cannot enter `split_sessions`, and normal `train`, resume, evaluation,
+and the two-independent-group requirement are unchanged. The Windows smoke runner
+must label checkpoints/exports **diagnostic-only**, retain this provenance and
+strict failure report, and report no held-out score or driving-quality claim.
+Do not manufacture an engine checkpoint with fake validation history to use its
+normal exporter; save/reload the diagnostic weights and normalization explicitly
+in the isolated runner. Such artifacts must not be deployed for wheel control.
+Obtaining the actual extended recorder source is necessary before establishing a
+production import rule for this recording. This inspection did not run any CPU
+or GPU training, hardware, or live inference.

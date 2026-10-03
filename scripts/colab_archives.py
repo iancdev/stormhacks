@@ -4,6 +4,7 @@ Keep the notebook's archive-helpers cell in sync with this file. Only extract
 archives whose code/data you trust; containment does not establish provenance.
 """
 from pathlib import Path, PurePosixPath
+import json
 import shutil
 import stat
 import tempfile
@@ -87,8 +88,19 @@ def extract_sessions(archives, destination):
                 if not candidates or any(not p.is_dir() for p in candidates):
                     raise ValueError(f'{archive}: expected session folders immediately below ZIP root')
             for candidate in candidates:
-                required = ['metadata.json', 'frames.csv', 'wheel.csv', 'telemetry.csv']
-                if not all((candidate / name).is_file() for name in required) or not (candidate / 'images').is_dir():
+                manifest = candidate / 'metadata.json'
+                if not manifest.is_file():
+                    raise ValueError(f'{archive}: incomplete or nested session layout: {candidate.name}')
+                schema = json.loads(manifest.read_text()).get('schema_version')
+                if type(schema) is int and schema == 1:
+                    required = ['metadata.json', 'frames.csv', 'wheel.csv', 'telemetry.csv']
+                    image_directory = 'images'
+                elif schema == 'record_py_aligned_v1':
+                    required = ['metadata.json', 'meta.json', 'labels.csv']
+                    image_directory = 'frames'
+                else:
+                    raise ValueError(f'{archive}: unsupported session schema: {schema!r}')
+                if not all((candidate / name).is_file() for name in required) or not (candidate / image_directory).is_dir():
                     raise ValueError(f'{archive}: incomplete or nested session layout: {candidate.name}')
                 # Use unique local names; session_id uniqueness is checked by the validator.
                 target = combined / f'session-{len(list(combined.iterdir())):05d}'

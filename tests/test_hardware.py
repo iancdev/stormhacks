@@ -195,6 +195,30 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(AttributeError):
             adapter.button_count = 99
 
+    def test_autocenter_disable_is_confirmed_only_after_supported_success(self):
+        adapter = self.open()
+        self.assertTrue(adapter.autocenter_disabled_confirmed)
+        self.rig.sdl.SDL_HapticSetAutocenter.assert_called_once_with("haptic", 0)
+        with self.assertRaises(AttributeError):
+            adapter.autocenter_disabled_confirmed = False
+
+    def test_unsupported_autocenter_remains_unconfirmed_without_blocking_tmx(self):
+        self.rig.sdl.SDL_HapticQuery.return_value = 3  # Constant + gain, no autocenter.
+        adapter = self.open()
+        self.assertFalse(adapter.autocenter_disabled_confirmed)
+        self.rig.sdl.SDL_HapticSetAutocenter.assert_not_called()
+        adapter.set_torque(0.1)
+        adapter.set_torque(0)
+        self.assertFalse(self.rig.active)
+
+    def test_failed_supported_autocenter_disable_propagates_and_cleans_up(self):
+        self.rig.sdl.SDL_HapticSetAutocenter.return_value = -1
+        with self.assertRaisesRegex(HardwareError, "SDL_HapticSetAutocenter"):
+            self.rig.adapter()
+        self.rig.sdl.SDL_HapticClose.assert_called_once()
+        self.rig.sdl.SDL_JoystickClose.assert_called_once()
+        self.rig.sdl.SDL_HapticRunEffect.assert_not_called()
+
     def test_uncalibrated_thrustmaster_models_are_not_opened(self):
         self.rig.sdl.SDL_JoystickNameForIndex.side_effect = lambda index: [
             b"vJoy", b"Thrustmaster T150"][index]
