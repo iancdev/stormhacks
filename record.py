@@ -305,7 +305,8 @@ class TelemetryReader(threading.Thread):
 
     def __init__(self, port):
         super().__init__(daemon=True)
-        self.latest = None          # (t, race_on, speed_mps, tele_steer, race_time, distance)
+        # (t, race_on, speed_mps, tele_steer, race_time, distance, yaw_rate, game_ms)
+        self.latest = None
         # Rewind watchdog: the race clock only runs forwards while driving, so any step back means
         # Forza rewound (seen either during the rewind, or on the first packet after it).
         self.last_backjump = -1e9
@@ -334,12 +335,15 @@ class TelemetryReader(threading.Thread):
                            struct.unpack_from("<f", data, 256)[0],
                            struct.unpack_from("<b", data, 320)[0],
                            race_time,
-                           struct.unpack_from("<f", data, 292)[0])
+                           struct.unpack_from("<f", data, 292)[0],
+                           struct.unpack_from("<f", data, 48)[0],    # AngularVelocityY (yaw rate, rad/s)
+                           struct.unpack_from("<I", data, 4)[0])     # TimestampMS (game clock)
         self.sock.close()
 
 
 COLUMNS = ["frame", "segment", "t", "steer_raw", "steer_deg", "brake", "gas",
-           "wheel_age_ms", "speed_mps", "race_on", "tele_steer", "tele_age_ms", "race_time", "distance"]
+           "wheel_age_ms", "speed_mps", "race_on", "tele_steer", "tele_age_ms", "race_time", "distance",
+           "yaw_rate", "game_ms"]
 
 
 class Writer(threading.Thread):
@@ -474,7 +478,8 @@ def cmd_record(args):
                        f"{brake:.4f}", f"{gas:.4f}", f"{(t - wt) * 1000:.1f}",
                        f"{tl[2]:.3f}" if tl else "", tl[1] if tl else "",
                        tl[3] if tl else "", f"{(t - tl[0]) * 1000:.1f}" if tl else "",
-                       f"{tl[4]:.3f}" if tl else "", f"{tl[5]:.1f}" if tl else ""]
+                       f"{tl[4]:.3f}" if tl else "", f"{tl[5]:.1f}" if tl else "",
+                       f"{tl[6]:.4f}" if tl else "", tl[7] if tl else ""]
                 pending.append((t, segment, process(img, masks, size), row))
                 frame_idx += 1
                 # Only flush while driving: if telemetry stops during a rewind, the frames before it
