@@ -201,6 +201,8 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
             'train_sessions': [s.session_id for s in train_sessions],
             'validation_sessions': [s.session_id for s in val_sessions],
             'dataset_fingerprints': fingerprints, 'train_mean_angle_deg': mean,
+            'dataset_groups': {s.session_id: s.group for s in sessions},
+            'dataset_provenance': {s.session_id: s.provenance for s in sessions},
             'best_rmse_deg': best, 'history': history,
             'torch_rng_state': torch.get_rng_state(),
             'cuda_rng_state': torch.cuda.get_rng_state_all() if device.type == 'cuda' else [],
@@ -221,8 +223,9 @@ def evaluate(checkpoint, data, device='cpu', unseen=False):
     saved = load_checkpoint(checkpoint)
     sessions = load_sessions(data, Alignment(**saved['alignment']))
     if unseen:
-        if any(s.session_id in saved['dataset_fingerprints'] for s in sessions):
-            raise ValueError('--unseen requires entirely new session IDs')
+        used_groups = set(saved.get('dataset_groups', {key: key for key in saved['dataset_fingerprints']}).values())
+        if any(s.session_id in saved['dataset_fingerprints'] or s.group in used_groups for s in sessions):
+            raise ValueError('--unseen requires entirely new session IDs and recording groups')
     else:
         selected = {s.session_id: s for s in sessions}
         if not set(saved['validation_sessions']) <= selected.keys():
@@ -254,6 +257,8 @@ def export(checkpoint, destination):
         'validation': saved['history'][-1]['validation'],
         'training_session_ids': saved['train_sessions'],
         'validation_session_ids': saved['validation_sessions'],
+        'dataset_groups': saved.get('dataset_groups', {}),
+        'dataset_provenance': saved.get('dataset_provenance', {}),
     }
     atomic_save({key: value.cpu() for key, value in saved['model_state'].items()}, destination / 'model.pt')
     (destination / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')

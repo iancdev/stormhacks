@@ -157,3 +157,73 @@ Set `RESUME = True` and a higher total `EPOCHS` to continue. Export folders incl
 the target epoch count and a unique suffix, including repeated evaluations of the
 same epoch. Notebook cells are locally smoke-tested, but Google authentication,
 Drive mounting, and GPU execution still require validation in Colab.
+
+## Import recordings from `record.py`
+
+The recorder added in `8e379da` writes `meta.json`, `labels.csv`, and JPEGs under
+`frames/`. Import each **normally stopped, fully copied** recording explicitly:
+
+```bash
+forza-train import-recording /path/to/recording /path/to/dataset/drive-001 --expert-mode manual
+forza-train import-recording /path/to/another-recording /path/to/dataset/drive-002 --expert-mode manual
+forza-train validate /path/to/dataset
+forza-train train /path/to/dataset /path/to/run --device cuda --epochs 10
+```
+
+On Windows the same commands accept quoted Windows paths. Only the normal
+training dependencies are needed; the importer does not import the recorder,
+OpenCV, wheel drivers, or other Windows hardware packages. `--expert-mode manual`
+declares that the entire source recording contains human steering demonstrations.
+Do not use it for AI-generated steering; this recorder does not log control mode.
+Source files are never edited and an existing destination is never overwritten.
+
+The importer retains original `labels.csv`, `meta.json`, and JPEG bytes. It adds
+`metadata.json` identifying the **distinct `record_py_aligned_v1` format**. It does
+not manufacture v1 wheel/telemetry streams or claim exact capture timestamps.
+The existing training CLI recognizes this format alongside v1 sessions.
+
+Completion is inferred conservatively from `meta.json` (written after the
+recorder's normal writer closure), matching row/image/frame counts, segment
+counts, ordered frame indexes, decodable JPEG dimensions, and valid values.
+Missing/corrupt images, extra files in `frames/`, inconsistent counts, absent
+metadata, invalid calibration, or `--no-telemetry` recordings fail import.
+An arbitrary exception or a partial copy is not silently treated as completed.
+There is no partial-recording recovery mode. Preserve the source and investigate
+or recopy it rather than inventing completion metadata.
+
+**Timing limitation:** `t` is elapsed `perf_counter` sampled after
+`get_latest_frame()` returns, rounded to 0.0001 seconds. It is not capture time.
+`video_mode=True` can return cached images, so image age has **no certified upper
+bound**. Wheel/telemetry ages are rounded to 0.1 ms, wheel angle to 0.01 degrees,
+and speed to 0.001 m/s. Validation summaries, checkpoints, and exports preserve
+this provenance, capture configuration, saved dimensions, and unknown image-age
+bound. Internal integer nanosecond representation of `t` remains quantized to
+100,000 ns; it adds no timestamp precision.
+
+Labels and speed are used only as already recorded on each row. **Only zero label
+offset is supported**; no interpolation or label shifting occurs within or across
+segments. Repeated wheel/telemetry observations are not reconstructed into fake
+unique source samples from independently rounded times and ages. The maximum
+wheel-gap setting is interpreted as maximum wheel **age** for this aligned format;
+the telemetry-age setting keeps its age meaning. Eligibility uses the upper end
+of each age's ±0.05 ms rounding interval. An age of 50.0 ms therefore exceeds a
+50 ms limit. Zero/negative rounded ages cannot certify that the sampled value
+existed at retrieval and are excluded, as are race-off rows. Consecutive identical
+JPEGs or repeated rounded retrieval times are excluded and counted; this cannot
+detect every stale/cached image or establish a true capture-age bound.
+
+All segments of one parent recording remain a **single session and split group**.
+At least two independent parent recordings are required for train/validation;
+multiple segments in one recording are not independent held-out data. The
+splitter also honors optional `split_group` in v1 metadata, keeping related
+sessions together. Evaluation with `--unseen` rejects groups from the original
+run even if their session IDs differ. Parent identity derives from the recorder's
+`session` field; renaming directories does not create an independent recording.
+Do not relabel/copy subsets as independent recordings to obtain a split.
+
+The saved road images are already cropped, masked and resized using the recorder's
+OpenCV `INTER_AREA` transform. Import copies them unchanged; model preprocessing
+still applies the exported RGB/Pillow bilinear 200×66 transform. For live parity,
+configure the runtime with that recording's exact capture configuration and saved
+size before model preprocessing. No real recording or driving result is implied
+by the synthetic import tests.
