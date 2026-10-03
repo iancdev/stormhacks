@@ -14,6 +14,11 @@ from PIL import Image
 FORMAT = 'record_py_aligned_v1'
 COLUMNS = ['frame', 'segment', 't', 'steer_raw', 'steer_deg', 'brake', 'gas',
            'wheel_age_ms', 'speed_mps', 'race_on', 'tele_steer', 'tele_age_ms']
+LEGACY_METADATA_KEYS = {'session', 'config', 'saved_size', 'fps_target', 'frames',
+                        'segments', 'dropped', 'vjoy', 'telemetry', 'steer_units_per_deg',
+                        'pedals', 'gaps'}
+DIAGNOSTIC_EXTRA_COLUMNS = {'race_time', 'distance', 'yaw_rate', 'game_ms', 'gear'}
+
 TIMING = {
     'timestamp_meaning': 'relative perf_counter at get_latest_frame return, not capture',
     'time_resolution_ns': 100_000,
@@ -44,7 +49,7 @@ def _integer(value, key):
     return int(value)
 
 
-def _read_source(path):
+def _read_source(path, *, diagnostic_issues=None):
     """Require artifacts written after normal writer closure; no recovery inference."""
     path = Path(path).resolve()
     for name in ['meta.json', 'labels.csv', 'frames']:
@@ -87,7 +92,13 @@ def _read_source(path):
     with (path / 'labels.csv').open(newline='') as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames != COLUMNS:
-            raise ValueError('labels.csv columns do not match record.py')
+            columns = reader.fieldnames or []
+            extras = columns[len(COLUMNS):]
+            if (diagnostic_issues is None or columns[:len(COLUMNS)] != COLUMNS
+                    or not extras or len(set(columns)) != len(columns)
+                    or not set(extras) <= DIAGNOSTIC_EXTRA_COLUMNS):
+                raise ValueError('labels.csv columns do not match record.py')
+            diagnostic_issues.append('unsupported producer extension columns: ' + ', '.join(extras))
         rows = list(reader)
     if len(rows) != count:
         raise ValueError('meta.json frames count does not match labels.csv; incomplete recording')
@@ -138,8 +149,14 @@ def _read_source(path):
     # dropped frames can be absent anywhere, including after the last saved row.
     # Every such segment requires at least one recorded queue.Full drop.
     empty_segments = segments - len(observed_segments)
-    if empty_segments > dropped:
-        raise ValueError('meta.json empty segments exceed dropped-frame evidence')
+    legacy_interrupt = (set(metadata) == LEGACY_METADATA_KEYS
+                        and previous_segment == segments - 2
+                        and empty_segments == dropped + 1)
+    if empty_segments > dropped and not legacy_interrupt:
+        issue = 'meta.json empty segments exceed dropped-frame evidence'
+        if diagnostic_issues is None:
+            raise ValueError(issue)
+        diagnostic_issues.append(issue)
     return metadata, rows
 
 
@@ -188,9 +205,16 @@ def load_recording(path, metadata, alignment):
             or metadata.get('session_id') != group or metadata.get('split_group') != group
             or metadata.get('timing') != TIMING or metadata.get('source_metadata') != source_meta):
         raise ValueError('invalid imported-recording provenance')
+    return _aligned_session(path, source_meta, rows, alignment, ['metadata.json', 'meta.json', 'labels.csv'])
+
+
+def _aligned_session(path, source_meta, rows, alignment, fingerprint_files):
+    from forza_ai.data.sessions import Sample, Session
+
+    group = 'record.py:' + source_meta['session']
     accepted, rejected = [], Counter()
     digest = hashlib.sha256()
-    for name in ['metadata.json', 'meta.json', 'labels.csv']:
+    for name in fingerprint_files:
         digest.update(name.encode())
         digest.update((path / name).read_bytes())
     previous_time, previous_image = None, None
@@ -227,5 +251,40 @@ def load_recording(path, metadata, alignment):
         'format': FORMAT, 'timing': TIMING, 'source_session': source_meta['session'],
         'segments': source_meta['segments'], 'capture_config': source_meta['config'],
         'saved_size': source_meta['saved_size'], 'expert_basis': 'explicit --expert-mode manual',
+        'empty_segment_evidence': ('legacy KeyboardInterrupt may leave one unqueued trailing segment'
+            if source_meta['segments'] - len({r['segment'] for r in rows}) > source_meta['dropped']
+            and set(source_meta) == LEGACY_METADATA_KEYS else 'recorded dropped-frame counts'),
     }
     return Session(path, group, accepted, dict(rejected), digest.hexdigest(), group, provenance)
+
+
+def inspect_recording_for_diagnostics(source, *, expert_mode=None, alignment=None):
+    """Read unchanged rows for an isolated offline smoke; never certify a session.
+
+    Only two known diagnostic incompatibilities are tolerated: the named additive
+    telemetry columns and unexplained empty segment counts. Image integrity,
+    row count/order/ranges, freshness filtering, and manual provenance still apply.
+    No files are written. The returned object is barred from production splitting.
+    """
+    from forza_ai.data.sessions import Alignment
+
+    if expert_mode != 'manual':
+        raise ValueError('diagnostics require explicit expert_mode="manual"')
+    alignment = alignment or Alignment()
+    if alignment.label_offset_ns != 0:
+        raise ValueError('diagnostic recorded labels support only zero label offset')
+    path = Path(source).resolve()
+    issues = []
+    source_meta, rows = _read_source(path, diagnostic_issues=issues)
+    result = _aligned_session(path, source_meta, rows, alignment, ['meta.json', 'labels.csv'])
+    result.provenance.update({
+        'format': 'record_py_diagnostic_only', 'diagnostic_only': True,
+        'production_validation_passed': False, 'strict_validation_issues': issues,
+        'extra_columns_ignored': sorted(set(rows[0]) - set(COLUMNS)),
+        'completion': 'not certified by this diagnostic path',
+        'empty_segment_evidence': 'unresolved' if any('segments' in issue for issue in issues)
+                                  else result.provenance['empty_segment_evidence'],
+    })
+    if not result.samples:
+        raise ValueError('diagnostic recording has no eligible samples')
+    return result

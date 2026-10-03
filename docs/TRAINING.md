@@ -235,3 +235,60 @@ the recorded `dropped` count supplies at least one dropped frame per empty
 segment. Segment IDs must still be ordered and within the declared count. This
 check admits that recorder behavior without inventing samples or accepting an
 unexplained mismatch in completion metadata.
+
+### Original Ctrl+C segment edge and diagnostic-only inspection
+
+The original `8e379da` recorder increments `segment` before processing/enqueueing
+the frame. A `KeyboardInterrupt` during that processing is caught as a normal
+stop, but neither a frame nor a queue-full drop has been counted. Replaying the
+actual historical loop with inert dependencies reproduced one saved segment,
+`segments=2`, `dropped=0`, and normal cleanup. Import therefore permits **at most
+one additional unaccounted trailing segment**, only for the original exact
+metadata-key shape and original CSV columns. Other empty segments still require
+recorded drops. Later/extended producer metadata does not receive this exception;
+its segment semantics must be established from its source. Accepted legacy
+imports report the Ctrl+C caveat in `empty_segment_evidence`.
+
+The supplied `smoke_20261003_152944.zip` (13,689,689 bytes; SHA-256
+`7829b5458609202f8ddd970ed0d789800a1347e775cbb0360234a10f214fbaeb`)
+is **not that exact tracked producer format**. It has extra `race_time`, `distance`,
+`yaw_rate`, `game_ms`, and `gear` columns, plus metadata such as
+`discarded_at_stop=5`, `drop_seconds`, and rewind counters. Its corresponding
+producer source is absent from the inspected Git history. It remains rejected by
+strict import; neither the original Ctrl+C possibility nor the discard counter
+proves the semantics of its empty final segment. Those extra telemetry fields are
+not model inputs and their units are not inferred or rescaled.
+
+A separate read-only API permits explicitly diagnostic offline work on that
+unchanged source. It tolerates only those named additive columns and unexplained
+empty-segment counts, records the discrepancies, and continues to enforce image
+integrity, row counts/order/ranges, calibration, and rounded-age eligibility:
+
+```python
+from forza_ai.data.recording import inspect_recording_for_diagnostics
+from forza_ai.data.dataset import SteeringDataset
+from forza_ai.policies.steering_model import Preprocessing
+
+session = inspect_recording_for_diagnostics(
+    r"C:\path\to\unchanged\raw", expert_mode="manual"
+)
+print(session.summary())
+assert session.provenance["diagnostic_only"]
+assert not session.provenance["production_validation_passed"]
+dataset = SteeringDataset([session], Preprocessing())
+# A separately bounded offline runner may now consume dataset batches.
+# This API itself performs no training and writes no session/metadata files.
+```
+
+The exact sample inspection found 1,988 eligible rows and 9 excluded for ambiguous
+or future rounded ages, with both strict-validation issues retained in provenance.
+The session cannot enter `split_sessions`, and normal `train`, resume, evaluation,
+and the two-independent-group requirement are unchanged. The Windows smoke runner
+must label checkpoints/exports **diagnostic-only**, retain this provenance and
+strict failure report, and report no held-out score or driving-quality claim.
+Do not manufacture an engine checkpoint with fake validation history to use its
+normal exporter; save/reload the diagnostic weights and normalization explicitly
+in the isolated runner. Such artifacts must not be deployed for wheel control.
+Obtaining the actual extended recorder source is necessary before establishing a
+production import rule for this recording. This inspection did not run any CPU
+or GPU training, hardware, or live inference.

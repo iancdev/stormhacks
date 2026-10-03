@@ -194,6 +194,8 @@ def load_sessions(root: Path, alignment: Alignment = Alignment()) -> list[Sessio
 
 
 def split_sessions(sessions: list[Session], validation_fraction: float, seed: int):
+    if any(session.provenance.get('diagnostic_only') for session in sessions):
+        raise ValueError('diagnostic-only recordings cannot enter production train/validation splits')
     groups = sorted({session.group for session in sessions})
     if not 0 < validation_fraction < 1 or len(groups) < 2:
         raise ValueError("need at least two independent session groups and 0 < validation_fraction < 1")
