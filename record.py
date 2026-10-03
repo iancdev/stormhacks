@@ -13,6 +13,8 @@ Options:
     record --fps N                      # capture rate (default 30)
     record --vjoy                       # also pass TMX steering/pedals through to vJoy (no FFB)
     record --no-telemetry               # record even without Forza Data Out (no speed, no pause)
+    record --rewind-button N            # pressing TMX button N (your Forza rewind) drops the last
+                                        # --drop-seconds (default 5) of frames + the rewind itself
 
 Crop/mask settings live in config/capture.json. Recordings go to data/recordings/<timestamp>/:
 frames/000000.jpg ..., labels.csv (one row per frame) and meta.json.
@@ -27,6 +29,7 @@ import struct
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime
 
 import cv2
@@ -221,6 +224,7 @@ class WheelReader(threading.Thread):
         # SDL reads 0 on every axis until the wheel sends its first report, and raw 0 on a pedal
         # means half pressed. Only trust (and pass through) the axes once each one has moved.
         self.live = False
+        self.buttons = frozenset()  # SDL button indices currently held (same numbers as check.py wheel)
         self.error = None
         self.ready = threading.Event()
         self.stop = threading.Event()
@@ -257,6 +261,7 @@ class WheelReader(threading.Thread):
         def to_vjoy(raw):  # -32768..32767 -> 0x1..0x8000 (pedals stay inverted, like the TMX)
             return 1 + (raw + 32768) * 0x7FFF // 65535
 
+        n_buttons = sdl2.SDL_JoystickNumButtons(js)
         first, moved = None, [False, False, False]
         try:
             while not self.stop.is_set():
@@ -265,6 +270,7 @@ class WheelReader(threading.Thread):
                 brake = sdl2.SDL_JoystickGetAxis(js, 1)
                 gas = sdl2.SDL_JoystickGetAxis(js, 2)
                 self.latest = (time.perf_counter(), steer, brake, gas)
+                self.buttons = frozenset(i for i in range(n_buttons) if sdl2.SDL_JoystickGetButton(js, i))
                 if not self.live:
                     first = first or (steer, brake, gas)
                     moved = [m or v != f for m, v, f in zip(moved, (steer, brake, gas), first)]
@@ -379,11 +385,26 @@ def cmd_record(args):
           f"crop={cfg['crop']} masks={len(cfg['masks'])} saved={size[0]}x{size[1]} fps={args.fps} "
           f"vjoy={'on' if args.vjoy else 'off'} telemetry={'on' if tele else 'off'}\n"
           + ("Frames are only kept while Forza reports IsRaceOn=1 (driving, not paused/menus).\n" if tele else "")
+          + (f"Rewind (button {args.rewind_button}) throws away the last {args.drop_seconds:g}s of frames.\n"
+             if args.rewind_button is not None else "")
           + "Ctrl+C to stop.\n")
 
     frame_idx, segment, recording = 0, -1, False
-    dropped = 0
+    dropped = discarded = rewinds = 0
+    was_rewinding = False
     times = []                       # (segment, t) of kept frames, for the gap report
+    # Frames wait here for drop_seconds before going to disk, so a rewind can still take them back.
+    pending = deque()
+
+    def flush(block=False):
+        nonlocal dropped
+        pt, seg, im, row = pending.popleft()
+        try:
+            writer.q.put((im, row), block=block)
+            times.append((seg, pt))
+        except queue.Full:
+            dropped += 1
+
     t_start, last_status = time.perf_counter(), 0.0
     try:
         while True:
@@ -405,6 +426,17 @@ def cmd_record(args):
             else:
                 active, state = True, "REC"
 
+            # Rewind: the last few seconds were the mistake, and the rewind playback itself is
+            # backwards footage. Drop both; driving resumes in a new segment after release.
+            rewinding = args.rewind_button is not None and args.rewind_button in wheel.buttons
+            if rewinding:
+                if not was_rewinding:
+                    rewinds += 1
+                    discarded += len(pending)
+                    pending.clear()
+                active, state = False, f"rewind, dropped last {args.drop_seconds:g}s"
+            was_rewinding = rewinding
+
             if active and not recording:
                 segment += 1          # new segment after every pause: don't shift labels across gaps
             recording = active
@@ -416,19 +448,17 @@ def cmd_record(args):
                        f"{brake:.4f}", f"{gas:.4f}", f"{(t - wt) * 1000:.1f}",
                        f"{tl[2]:.3f}" if tl else "", tl[1] if tl else "",
                        tl[3] if tl else "", f"{(t - tl[0]) * 1000:.1f}" if tl else ""]
-                try:
-                    writer.q.put_nowait((process(img, masks, size), row))
-                    times.append((segment, t))
-                    frame_idx += 1
-                except queue.Full:
-                    dropped += 1
+                pending.append((t, segment, process(img, masks, size), row))
+                frame_idx += 1
+            while pending and t - pending[0][0] > args.drop_seconds:
+                flush()
 
             if t - last_status > 0.5:
                 last_status = t
                 speed = f"{tl[2] * 3.6:5.0f} km/h" if tl else "   -- km/h"
-                print(f"\r[{state:22s}] frames={frame_idx:6d} seg={max(segment, 0):3d} "
+                print(f"\r[{state:22s}] saved={len(times):6d} seg={max(segment, 0):3d} "
                       f"steer={steer / STEER_UNITS_PER_DEG:+7.1f}deg gas={(32767 - gas_raw) / 65535:4.2f} "
-                      f"brake={(32767 - brake_raw) / 65535:4.2f} {speed} dropped={dropped}   ",
+                      f"brake={(32767 - brake_raw) / 65535:4.2f} {speed} rewinds={rewinds} dropped={dropped}   ",
                       end="", flush=True)
     except KeyboardInterrupt:
         print("\nStopping...")
@@ -438,18 +468,23 @@ def cmd_record(args):
         wheel.stop.set()
         if tele:
             tele.stop.set()
+        while pending:                # Ctrl+C keeps the last few seconds
+            flush(block=True)
         writer.q.put(None)
         writer.join()
         wheel.join(2)
 
     report = gap_report(times, args.fps)
     meta = {"session": session, "config": cfg, "saved_size": size, "fps_target": args.fps,
-            "frames": frame_idx, "segments": segment + 1, "dropped": dropped, "vjoy": args.vjoy,
+            "frames": len(times), "segments": segment + 1, "dropped": dropped,
+            "rewinds": rewinds, "discarded_by_rewind": discarded, "drop_seconds": args.drop_seconds,
+            "rewind_button": args.rewind_button, "vjoy": args.vjoy,
             "telemetry": tele is not None, "steer_units_per_deg": STEER_UNITS_PER_DEG,
             "pedals": "0 = released, 1 = floored", "gaps": report}
     with open(os.path.join(session_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"Saved {frame_idx} frames in {segment + 1} segment(s) to {session_dir} (dropped {dropped})")
+    print(f"Saved {len(times)} frames in {segment + 1} segment(s) to {session_dir}\n"
+          f"Rewinds: {rewinds} ({discarded} frames thrown away). Dropped (disk too slow): {dropped}")
     if report:
         print(f"Frame gaps (ms): median {report['median_ms']}, p99 {report['p99_ms']}, "
               f"max {report['max_ms']}, {report['over_2x']} gap(s) > {2000 / args.fps:.0f} ms")
@@ -479,6 +514,10 @@ def main():
     rp.add_argument("--vjoy", action="store_true", help="pass TMX steering/pedals through to vJoy")
     rp.add_argument("--no-telemetry", action="store_true")
     rp.add_argument("--port", type=int, default=9999)
+    rp.add_argument("--rewind-button", type=int, default=None,
+                    help="TMX button bound to Rewind in Forza (number from: python utils\\test.py wheel)")
+    rp.add_argument("--drop-seconds", type=float, default=5.0,
+                    help="seconds of frames thrown away when rewind is pressed")
     args = p.parse_args()
     {"setup": cmd_setup, "preview": cmd_preview, "record": cmd_record}[args.cmd](args)
 
