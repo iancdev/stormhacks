@@ -4,7 +4,7 @@
 # Stops when TASKS.md has no unchecked items, or after MAX_ITERS.
 #
 # Usage: scripts/research_loop.sh [MAX_ITERS]
-# Env:   DEVIN_BIN (default: Devin.app bundled CLI), DEVIN_PERMISSION_MODE (default: smart)
+# Env:   DEVIN_BIN (default: Devin.app bundled CLI), DEVIN_PERMISSION_MODE (default: dangerous)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 DIR=research/dataset-survey
 MAX_ITERS="${1:-12}"
 DEVIN_BIN="${DEVIN_BIN:-/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin}"
-MODE="${DEVIN_PERMISSION_MODE:-smart}"
+MODE="${DEVIN_PERMISSION_MODE:-dangerous}"
 
 read -r -d '' PROMPT <<EOF || true
 You are one iteration of an automated research loop. Previous iterations have no memory; the files are the memory.
