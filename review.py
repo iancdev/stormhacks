@@ -28,6 +28,19 @@ STEER_UNITS_PER_DEG = 73.0
 TILE = (320, 66)
 
 
+def excluded_reason(session):
+    """Reason from config/exclude_sessions.txt if this session is left out of training, else None."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "exclude_sessions.txt")
+    if not os.path.exists(path):
+        return None
+    name = os.path.basename(os.path.normpath(session))
+    for line in open(path):
+        entry, _, reason = line.partition("#")
+        if entry.strip() and name.startswith(entry.strip()):
+            return reason.strip() or "listed"
+    return None
+
+
 def flags_for(rows):
     f = lambda k: np.array([float(r[k]) if r.get(k, "") != "" else np.nan for r in rows])
     deg, ts, v, gear = f("steer_deg"), f("tele_steer"), f("speed_mps") * 3.6, f("gear")
@@ -108,6 +121,9 @@ def main():
     any_flag = np.any(np.stack([m for n, m in flags.items() if n not in info]), axis=0)
 
     print(f"{session}\n{len(rows)} frames = {len(rows) / 30:.0f} s.  Forza steer per wheel degree: {k:.3f}\n")
+    reason = excluded_reason(session)
+    if reason:
+        print(f"*** WHOLE SESSION EXCLUDED from training (config/exclude_sessions.txt): {reason}\n")
     print("Flagged frames (left out of training):")
     for name, m in flags.items():
         if name not in info:

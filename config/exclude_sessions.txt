@@ -1,0 +1,4 @@
+# Recording sessions (folder names under data/recordings, prefix match) left out of training.
+# The data stays on disk; delete a line to use it again. Text after # is the reason.
+20261003_150225  # first session: recorded before race_time/yaw/gear/car columns existed; ends in a crash
+20261003_152123  # Forza steering ratio 0.17 vs 0.20-0.21 elsewhere: probably a different car or setting
