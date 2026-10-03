@@ -1,0 +1,25 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Driving recordings, models, and runtime output
+data/
+recordings/
+checkpoints/
+runs/
+logs/
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
