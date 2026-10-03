@@ -117,6 +117,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             raise ValueError("status logging is limited to 100,000 ticks; use a finite test")
         if takeover_button is not None and takeover_button < 0:
             raise ValueError("takeover button must be zero-based and nonnegative")
+        button_count = getattr(adapter, "button_count", None)
+        if takeover_button is not None and button_count is not None and takeover_button >= button_count:
+            raise ValueError(f"takeover button {takeover_button} is absent; device has {button_count} buttons")
         controller = SteeringController(config)
         events = command_queue if command_queue is not None else queue.Queue()
         if interactive:

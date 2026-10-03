@@ -53,6 +53,14 @@ class RuntimeTests(unittest.TestCase):
             run(adapter, FixedAnglePolicy(), control_hz=0)
         self.assertTrue(adapter.closed)
 
+    def test_missing_takeover_button_rejected_before_motor_commands(self):
+        adapter = SimulatedAdapter()
+        adapter.button_count = 3
+        with self.assertRaisesRegex(ValueError, "absent"):
+            run(adapter, FixedAnglePolicy(), assist=True, takeover_button=3)
+        self.assertTrue(adapter.closed)
+        self.assertEqual(adapter.angle, 0)
+
     def test_quit_event_cleans_up(self):
         events = queue.Queue()
         events.put("quit")
