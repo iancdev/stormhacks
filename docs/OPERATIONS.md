@@ -52,6 +52,15 @@ age, inference duration, control state, intervention count, route markers, and
 recording/transport status. Stale snapshots visibly disable controls. Requests
 are queued for the runtime; HTTP threads never write to the motor.
 
+The redesigned view includes timestamp-scaled steering, source-age, and torque
+traces with toggles/tooltips; observed capture/prediction/control rates; latency
+percentiles; control limits; and readable recording health. Rates are measured
+over a rolling two-second window and remain unknown during warm-up or when a
+source is absent. Remote prediction time includes the network round trip.
+Simulation, shadow, fault, stale, and disconnected states are explicitly distinct.
+The sticky header keeps Disengage AI visible while scrolling. A queued request
+is shown as confirmed only after a subsequent fresh runtime snapshot supports it.
+
 Keep the game foreground during assisted driving. Inspect the dashboard on a
 second screen without taking focus, or use the physical buttons. Clicking the
 browser causes the foreground guard to disengage AI; an arm request gives you
@@ -66,6 +75,11 @@ python -m forza_ai.runtime --backend sim --assist --sweep --duration 30 --dashbo
 This screenshot is from simulated hardware, not a physical driving result:
 
 ![Simulated operator dashboard](assets/dashboard-preview.jpg)
+
+[Narrow-screen preview](assets/dashboard-mobile-preview.jpg). The screenshots
+use synthetic signals, including a deliberately visible latched fault state;
+they are not evidence of physical driving or hardware acceptance. Known control
+defects from the code review remain listed in [HARNESS_REVIEW.md](HARNESS_REVIEW.md).
 
 ## Integrated recordings and human corrections
 

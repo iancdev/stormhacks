@@ -70,6 +70,22 @@ The wheel PC records frames, wheel inputs, telemetry, and control mode into comp
 
 See [OPERATIONS.md](OPERATIONS.md) and [configs/README.md](../configs/README.md).
 
+## Harness review and dashboard refinement
+
+The review of `7a9f425` confirmed four open defects, detailed with reproductions
+in [HARNESS_REVIEW.md](HARNESS_REVIEW.md): native actuation after command expiry
+(P1), unlatched transient inference failure (P1), missing standalone-recorder
+attachment checks (P2), and launcher Ctrl+C interrupting cleanup (P2). These
+control/data fixes were reported, not applied as part of the dashboard work.
+Address the P1 issues before physical assisted steering.
+
+The dashboard was separately redesigned with measured pipeline rates, three
+time-based charts, contextual states, recording/evaluation panels, a sticky
+disengagement action, and runtime-confirmed request feedback. Verified in a
+browser at desktop and 390px width with synthetic signals; no horizontal overflow
+was observed. Current full software suite: **401 tests and 192 subtests passed**.
+Passing tests do not negate the reproduced review findings.
+
 ## Next integration gates
 
 1. Collect at least two independent completed recordings. Import `record.py` output with `import-recording SOURCE DEST --expert-mode manual`, then validate. The importer preserves rounded aligned-label timing provenance and whole-recording split groups; it does not fabricate precise capture timestamps. Stream-based v1 sessions remain supported separately.

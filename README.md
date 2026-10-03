@@ -49,6 +49,7 @@ The tested hardware diagnostic is in `utils/test.py`. Training, recorder import,
 - [Primary two-PC setup: desktop training/inference and game/wheel control](docs/TWO_PC_SETUP.md)
 - [Operator controls, dashboard, correction recording, and reports](docs/OPERATIONS.md)
 - [Saved deployment profiles and launchers](configs/README.md)
+- [Open harness review findings](docs/HARNESS_REVIEW.md) — two P1 control issues remain before physical assistance.
 
 ## Start training development
 
