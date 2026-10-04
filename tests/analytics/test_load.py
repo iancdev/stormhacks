@@ -9,15 +9,19 @@ import unittest
 from forza_ai.analytics import db, load, report
 
 
-def write_recording(root, session="20261003_161200", frames=3):
+EXTENDED = ["race_time", "distance", "yaw_rate", "game_ms", "gear", "car_ordinal", "car_class", "car_pi"]
+
+
+def write_recording(root, session="20261003_161200", frames=3, extended=False):
     path = Path(root) / session
     (path / "frames").mkdir(parents=True)
     with (path / "labels.csv").open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(load.RECORDER_COLUMNS)
+        writer.writerow(load.RECORDER_COLUMNS + (EXTENDED if extended else []))
         for index in range(frames):
             writer.writerow([index, 0, f"{index / 30:.4f}", -1204 + index, f"{(-1204 + index) / 73:.2f}",
-                             "0.0000", "0.6210", "1.2", "24.310", "1", "-12", "3.4"])
+                             "0.0000", "0.6210", "1.2", "24.310", "1", "-12", "3.4"]
+                            + (["12.5", "310.2", "-0.0421", "812345", "4", "2345", "6", "740"] if extended else []))
     (path / "meta.json").write_text(json.dumps({"session": session, "frames": frames, "segments": 1}))
     return path
 
@@ -45,6 +49,13 @@ class RecordingRowsTests(unittest.TestCase):
         self.assertEqual(first["steer_deg"], -16.49)
         self.assertEqual((first["speed_mps"], first["gas"], first["brake"], first["race_on"]), (24.31, 0.621, 0.0, True))
         self.assertIsNone(first["target_deg"])
+        self.assertIsNone(first["yaw_rate"])
+        self.assertIsNone(first["gear"])
+
+    def test_accepts_newer_recorder_diagnostic_columns(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, rows = load.recording_rows(write_recording(root, extended=True))
+        self.assertEqual((rows[0]["yaw_rate"], rows[0]["gear"], rows[0]["steer_deg"]), (-0.0421, 4, -16.49))
 
     def test_rejects_foreign_columns(self):
         with tempfile.TemporaryDirectory() as root:

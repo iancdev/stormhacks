@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 
 COLUMNS = ["time", "session", "source", "segment", "frame_id", "image_path", "mode", "steer_deg",
-           "target_deg", "predicted_deg", "torque", "speed_mps", "gas", "brake", "race_on", "obs_age_ms"]
+           "target_deg", "predicted_deg", "torque", "speed_mps", "gas", "brake", "race_on", "obs_age_ms",
+           "yaw_rate", "gear"]
 RECORDER_COLUMNS = ["frame", "segment", "t", "steer_raw", "steer_deg", "brake", "gas",
                     "wheel_age_ms", "speed_mps", "race_on", "tele_steer", "tele_age_ms"]
 RUNTIME_REQUIRED = {"timestamp_ns", "mode", "target_angle_deg", "actual_angle_deg", "torque"}
@@ -32,7 +33,9 @@ def recording_rows(path):
         start = datetime.fromtimestamp((path / "meta.json").stat().st_mtime).astimezone()
     with (path / "labels.csv").open(newline="") as handle:
         reader = csv.DictReader(handle)
-        if reader.fieldnames != RECORDER_COLUMNS:
+        # Newer recorder versions append diagnostic columns (race_time, yaw_rate, gear, car_*); the
+        # original twelve must lead unchanged.
+        if (reader.fieldnames or [])[:len(RECORDER_COLUMNS)] != RECORDER_COLUMNS:
             raise ValueError("labels.csv columns do not match record.py")
         rows = []
         for raw in reader:
@@ -42,7 +45,8 @@ def recording_rows(path):
                              mode="manual", steer_deg=_float(raw["steer_deg"]), speed_mps=_float(raw["speed_mps"]),
                              gas=_float(raw["gas"]), brake=_float(raw["brake"]),
                              race_on=None if raw["race_on"] == "" else raw["race_on"] == "1",
-                             obs_age_ms=_float(raw["wheel_age_ms"])))
+                             obs_age_ms=_float(raw["wheel_age_ms"]), yaw_rate=_float(raw.get("yaw_rate")),
+                             gear=None if raw.get("gear") in (None, "") else int(float(raw["gear"]))))
     return session, rows
 
 

@@ -18,8 +18,13 @@ CREATE TABLE IF NOT EXISTS wheel_samples (
     gas           DOUBLE PRECISION,
     brake         DOUBLE PRECISION,
     race_on       BOOLEAN,
-    obs_age_ms    DOUBLE PRECISION            -- wheel sample age (recorder) or observation age (runtime)
+    obs_age_ms    DOUBLE PRECISION,           -- wheel sample age (recorder) or observation age (runtime)
+    yaw_rate      DOUBLE PRECISION,           -- game yaw rate (newer recorder versions only)
+    gear          INTEGER                     -- in-game gear (newer recorder versions only)
 );
+
+ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS yaw_rate DOUBLE PRECISION;
+ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS gear INTEGER;
 
 SELECT create_hypertable('wheel_samples', 'time', if_not_exists => TRUE);
 
