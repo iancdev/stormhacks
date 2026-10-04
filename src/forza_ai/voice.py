@@ -46,7 +46,7 @@ class Segmenter:
     """Cut 30 ms int16 blocks into utterances by energy, against an adaptive noise floor."""
 
     def __init__(self, start_blocks=3, end_blocks=23, preroll_blocks=10, max_blocks=270, min_blocks=12,
-                 min_rms=400.0):
+                 min_rms=150.0):
         self.start_blocks, self.end_blocks, self.preroll = start_blocks, end_blocks, preroll_blocks
         self.max_blocks, self.min_blocks, self.min_rms = max_blocks, min_blocks, min_rms
         self.noise = min_rms / 3
@@ -337,6 +337,7 @@ class VoiceAssistant:
                 self._offer(utterance)
 
     def _offer(self, samples):
+        self.log(f"[APEX] ...thinking ({len(samples) / SAMPLE_RATE:.1f} s of speech)")
         try:
             self._utterances.put_nowait(samples)
         except queue.Full:
@@ -357,8 +358,10 @@ class VoiceAssistant:
         started = time.monotonic()
         decision = self.brain.interpret(self._tuning.snapshot(), audio=audio, text=text,
                                         wake_required=self.wake_word)
-        if decision["action"] == "ignore":
-            return None                                 # chatter, game audio, not addressed to APEX
+        if decision["action"] == "ignore":              # chatter, game audio, not addressed to APEX
+            if decision.get("heard"):
+                self.log(f'[APEX] not for me: "{decision["heard"]}"')
+            return None
         self.log(f'[APEX] heard: "{decision.get("heard", "")}"')
         reply = decision["reply"]
         if decision["action"] == "take_over":
