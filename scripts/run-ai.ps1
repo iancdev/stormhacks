@@ -38,6 +38,15 @@ param(
     [double]$ThrottleRate = 0.5,
     [ValidateRange(0, 400)]
     [double]$MaxSpeedKmh = 0,
+    # Braking: multiply the model's brake; and when steering past CornerAngleDeg above CornerSpeedKmh,
+    # cut the gas and brake in proportion to the excess (0 = off). Human data: 15-30 deg corners at a
+    # median 171 km/h, 30-60 deg at 133 km/h; the AI is less precise, so 130 at 15+ deg.
+    [ValidateRange(0.5, 4.0)]
+    [double]$BrakeGain = 1.5,
+    [ValidateRange(0, 400)]
+    [double]$CornerSpeedKmh = 130,
+    [ValidateRange(1, 90)]
+    [double]$CornerAngleDeg = 15,
     # AI steers only; you drive the gas and brake (pressing them does not take over).
     [switch]$HumanPedals,
     # The laptop serves a steering-only (v1) model instead of a steering+pedal (v2) one.
@@ -74,7 +83,8 @@ if ($SteeringOnlyModel) {
     $runtimeArgs += "--human-pedals"
 } else {
     $runtimeArgs += @("--auto-pedals", "--throttle-cap", $ThrottleCap, "--throttle-rate", $ThrottleRate,
-                      "--max-speed-kmh", $MaxSpeedKmh)
+                      "--max-speed-kmh", $MaxSpeedKmh, "--brake-gain", $BrakeGain,
+                      "--corner-speed-kmh", $CornerSpeedKmh, "--corner-angle-deg", $CornerAngleDeg)
 }
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
 if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel") }
@@ -90,7 +100,7 @@ $how = if ($Mode -eq "Mirror") { "${pedalHow}or hold the wheel away from the AI"
 Write-Host "Mode: $Mode | ARM button $ArmButton | takeover button $TakeoverButton ($how)"
 Write-Host "Steering gain x$SteerGain, target rate $TargetRate deg/s"
 if ($HumanPedals) { Write-Host "Pedals: YOU drive gas and brake; the AI steers only" }
-else { Write-Host "AI pedals: throttle cap $ThrottleCap, ramp $ThrottleRate/s, speed cap $(if ($MaxSpeedKmh) { "$MaxSpeedKmh km/h" } else { 'off' })" }
+else { Write-Host "AI pedals: throttle cap $ThrottleCap, ramp $ThrottleRate/s, speed cap $(if ($MaxSpeedKmh) { "$MaxSpeedKmh km/h" } else { 'off' }), brake x$BrakeGain, corner limit $(if ($CornerSpeedKmh) { "$CornerSpeedKmh km/h past $CornerAngleDeg deg" } else { 'off' })" }
 Write-Host "Dashboard: http://${DashboardHost}:$DashboardPort  (from the laptop: http://169.254.218.1:$DashboardPort)"
 Write-Host "Log: $status"
 Push-Location $repo
