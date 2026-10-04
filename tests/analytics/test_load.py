@@ -172,6 +172,56 @@ class SessionRowsTests(unittest.TestCase):
                 load.session_rows(path, end_time=self.END)
 
 
+class ReportRowTests(unittest.TestCase):
+    REPORT = {
+        "ticks": 1200, "mode": "assist", "actuation": "direct_vjoy", "error": None, "hardware_verified": False,
+        "metrics": {
+            "schema_version": 1, "duration_seconds": 12.0, "ticks": 1200,
+            "mode_seconds": {"manual": 2.0, "assist": 8.0, "takeover": 1.5, "fault": 0.5, "unknown": 0.0},
+            "human_interventions": 2, "interventions_per_assist_minute": 15.0,
+            "tracking_rmse_deg": 3.25, "tracking_samples": 800, "max_abs_torque": 0.12, "fault_entries": 1,
+            "routes": {"attempts": 1, "completed": 1, "aborted": 0},
+        },
+    }
+
+    def test_flattens_runtime_summary_and_nested_metrics(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            path.write_text(json.dumps(self.REPORT))
+            row = load.report_row(path, "run-7")
+        self.assertEqual(list(row), load.REPORT_COLUMNS)
+        self.assertEqual((row["session"], row["actuation"], row["duration_s"], row["ticks"]), ("run-7", "direct_vjoy", 12.0, 1200))
+        self.assertEqual((row["manual_s"], row["assist_s"], row["takeover_s"], row["fault_s"]), (2.0, 8.0, 1.5, 0.5))
+        self.assertEqual((row["human_interventions"], row["interventions_per_assist_minute"]), (2, 15.0))
+        self.assertEqual((row["tracking_rmse_deg"], row["max_abs_torque"], row["fault_entries"]), (3.25, 0.12, 1))
+        self.assertEqual((row["routes_attempted"], row["routes_completed"], row["routes_aborted"]), (1, 1, 0))
+        self.assertIsNone(row["error"])
+        self.assertEqual(json.loads(row["report"]), self.REPORT)
+
+    def test_missing_metrics_yield_nulls_not_errors(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            path.write_text(json.dumps({"ticks": 5, "error": "RuntimeError: wheel lost"}))
+            row = load.report_row(path, "broken")
+        self.assertEqual((row["ticks"], row["error"], row["actuation"]), (5, "RuntimeError: wheel lost", None))
+        self.assertIsNone(row["interventions_per_assist_minute"])
+
+
+class UpsertReportTests(unittest.TestCase):
+    def test_upsert_binds_every_column_and_replaces_on_conflict(self):
+        conn = FakeConnection()
+        row = dict.fromkeys(load.REPORT_COLUMNS)
+        row.update(session="run-1", report="{}")
+        load.upsert_report(conn, row)
+        kind, sql, params = conn.log[0]
+        self.assertEqual(kind, "execute")
+        self.assertIn("INSERT INTO run_reports (session, actuation", sql)
+        self.assertIn("ON CONFLICT (session) DO UPDATE SET actuation = EXCLUDED.actuation", sql)
+        self.assertNotIn("session = EXCLUDED.session", sql)
+        self.assertEqual(len(params), len(load.REPORT_COLUMNS))
+        self.assertEqual(params[0], "run-1")
+
+
 class FakeCopy:
     def __init__(self, sink):
         self.sink = sink
