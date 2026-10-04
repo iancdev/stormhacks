@@ -14,8 +14,8 @@ CREATE TABLE IF NOT EXISTS wheel_samples (
     image_path    TEXT,                       -- pointer to the JPEG on disk; pixels are never stored here
     mode          TEXT,                       -- manual | assist | takeover | fault
     steer_deg     DOUBLE PRECISION,           -- measured physical wheel angle, right positive
-    target_deg    DOUBLE PRECISION,           -- limited controller target (status CSV only)
-    predicted_deg DOUBLE PRECISION,           -- raw policy output (status CSV only)
+    target_deg    DOUBLE PRECISION,           -- limited controller target (status CSV or predictions.csv)
+    predicted_deg DOUBLE PRECISION,           -- raw policy output (status CSV or predictions.csv)
     torque        DOUBLE PRECISION,           -- normalized [-1, 1] (status CSV only)
     speed_mps     DOUBLE PRECISION,
     gas           DOUBLE PRECISION,
@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS wheel_samples (
     yaw_rate      DOUBLE PRECISION,           -- newer record.py versions only
     gear          INTEGER,                    -- newer record.py versions only
     rpm           DOUBLE PRECISION,           -- stream-v1 telemetry
-    game_ms       BIGINT                      -- stream-v1 game clock
+    game_ms       BIGINT,                     -- stream-v1 game clock
+    predicted_gas DOUBLE PRECISION,           -- AI pedal output (stream-v1 predictions.csv)
+    predicted_brake DOUBLE PRECISION
 );
 
 -- Columns added after the first deployment; no-ops on a fresh install.
@@ -33,6 +35,8 @@ ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS yaw_rate DOUBLE PRECISION;
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS gear INTEGER;
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS rpm DOUBLE PRECISION;
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS game_ms BIGINT;
+ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS predicted_gas DOUBLE PRECISION;
+ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS predicted_brake DOUBLE PRECISION;
 
 SELECT create_hypertable('wheel_samples', 'time', if_not_exists => TRUE);
 

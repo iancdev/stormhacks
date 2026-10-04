@@ -74,9 +74,11 @@ Details and limits:
   sample stream; its `control_mode` column is the *training label* (the
   recorder writes every non-expert sample as `assist`), so the stored `mode`
   is the true mode from the latest preceding `events.csv` entry. Telemetry is
-  joined causally (latest sample at or before each wheel timestamp). Stream-v1
-  does not log the policy target, so `target_deg`/`tracking_err_deg` are null
-  for these rows; use `run_reports.tracking_rmse_deg` instead.
+  joined causally (latest sample at or before each wheel timestamp). When the
+  session was recorded with `run-ai.ps1 -Record`, `predictions.csv` is joined
+  the same way (by `generated_time_ns`) and fills `predicted_deg`,
+  `target_deg`, `predicted_gas`, and `predicted_brake`, including during human
+  takeovers. Sessions without that file load with those columns null.
 - `load-report` flattens the runtime summary; `actuation` is `motor` or
   `direct_vjoy`. Do not compare interventions or tracking across actuation
   modes: in direct-vJoy mode no motor holds the wheel and turning past the
@@ -106,6 +108,11 @@ pasted into the Tiger Console SQL editor or any Postgres client.
   shows how closely the wheel followed the model's target. Lower is better.
 - **Stability:** compare `steer_jitter_deg` between a `recorder` human lap and a
   `session` AI run on the same route.
+- **AI vs human:** the disagreement table groups rows that have a prediction by
+  `mode`. In `assist` it is tracking error; in `takeover` it is how far the
+  human steered from what the AI wanted. `mean_signed_deg` shows the direction
+  of the bias and `human_over_ai_ratio` is the gain the human applied relative
+  to the model (a ratio above 1 means the model understeers).
 - **Model comparison:** load each model's run under its own session name; the
   Runs table then reads as a leaderboard.
 

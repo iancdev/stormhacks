@@ -71,6 +71,8 @@ def main(argv=None):
             print("\nSessions\n" + report.format_table(*report.fetch(conn, report.SESSION_SUMMARY)))
             print("\nPer minute (stability_1m)\n"
                   + report.format_table(*report.fetch(conn, report.PER_MINUTE, session=args.session)))
+            print("\nAI vs human steering (rows with predictions)\n"
+                  + report.format_table(*report.fetch(conn, report.DISAGREEMENT, session=args.session)))
             if args.events:
                 print("\nControl hand-offs (control_events)\n"
                       + report.format_table(*report.fetch(conn, report.CONTROL_EVENTS, session=args.session)))

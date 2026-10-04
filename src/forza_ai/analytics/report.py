@@ -57,6 +57,22 @@ WHERE (%(session)s::text IS NULL OR e.session = %(session)s)
 ORDER BY e.session, e.time
 """
 
+# How far the human steered from what the AI wanted. In assist mode this is tracking error;
+# in takeover mode it is the size of the human's correction.
+DISAGREEMENT = """
+SELECT session, mode,
+       count(*)                                                       AS samples,
+       round(avg(abs(predicted_deg - steer_deg))::numeric, 2)         AS mean_abs_disagreement_deg,
+       round(avg(predicted_deg - steer_deg)::numeric, 2)              AS mean_signed_deg,
+       round((avg(abs(steer_deg)) / nullif(avg(abs(predicted_deg)), 0))::numeric, 2)
+                                                                      AS human_over_ai_ratio
+FROM wheel_samples
+WHERE predicted_deg IS NOT NULL
+  AND (%(session)s::text IS NULL OR session = %(session)s)
+GROUP BY session, mode
+ORDER BY session, mode
+"""
+
 # Status CSVs have no events file, so takeover onsets are inferred from mode changes.
 TAKEOVER_EVENTS = """
 SELECT session, time,

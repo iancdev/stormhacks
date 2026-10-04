@@ -90,6 +90,15 @@ class RuntimeRowsTests(unittest.TestCase):
                 load.runtime_rows(path)
 
 
+def write_predictions(path):
+    """Two AI predictions: one before the wheel stream, one between samples 2 and 3; pedals blank on the first."""
+    with (path / "predictions.csv").open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(load.SESSION_FIELDS["predictions"])
+        writer.writerows([(990_000_000, 980_000_000, "2.5", "2.4", "", "", "assist"),
+                          (1_015_000_000, 1_005_000_000, "4.0", "3.8", "0.3", "0.0", "assist")])
+
+
 def write_session(root, completed=True):
     """Tiny stream-v1 session: 4 wheel samples at 10 ms, 2 telemetry samples, 2 control events."""
     path = Path(root) / "session-001"
@@ -155,6 +164,31 @@ class SessionRowsTests(unittest.TestCase):
                                              "1000000000,manual,assist,0,unmarked_manual\n")
             _, rows, _ = load.session_rows(path, end_time=self.END)
         self.assertEqual([row["mode"] for row in rows], ["manual"] * 4)
+
+    def test_without_predictions_file_targets_are_null(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, rows, _ = load.session_rows(write_session(root), end_time=self.END)
+        self.assertTrue(all(row["predicted_deg"] is None and row["predicted_gas"] is None for row in rows))
+
+    def test_predictions_join_causally_on_generated_time(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = write_session(root)
+            write_predictions(path)
+            _, rows, _ = load.session_rows(path, end_time=self.END)
+        # samples at 1.000 and 1.010 see the 0.990 prediction; 1.020 and 1.030 see the 1.015 one
+        self.assertEqual([row["predicted_deg"] for row in rows], [2.5, 2.5, 4.0, 4.0])
+        self.assertEqual([row["target_deg"] for row in rows], [2.4, 2.4, 3.8, 3.8])
+        self.assertEqual([row["predicted_gas"] for row in rows], [None, None, 0.3, 0.3])
+        self.assertEqual([row["predicted_brake"] for row in rows], [None, None, 0.0, 0.0])
+        # takeover rows keep the AI's wish alongside the human's actual angle: the disagreement signal
+        self.assertEqual((rows[2]["mode"], rows[2]["steer_deg"], rows[2]["predicted_deg"]), ("takeover", 9.0, 4.0))
+
+    def test_rejects_foreign_prediction_columns(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = write_session(root)
+            (path / "predictions.csv").write_text("generated_time_ns,angle\n1,2\n")
+            with self.assertRaises(ValueError):
+                load.session_rows(path, end_time=self.END)
 
     def test_incomplete_session_refused_unless_allowed(self):
         with tempfile.TemporaryDirectory() as root:

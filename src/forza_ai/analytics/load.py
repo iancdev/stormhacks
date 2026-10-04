@@ -6,7 +6,7 @@ from pathlib import Path
 
 COLUMNS = ["time", "session", "source", "segment", "frame_id", "image_path", "mode", "steer_deg",
            "target_deg", "predicted_deg", "torque", "speed_mps", "gas", "brake", "race_on", "obs_age_ms",
-           "yaw_rate", "gear", "rpm", "game_ms"]
+           "yaw_rate", "gear", "rpm", "game_ms", "predicted_gas", "predicted_brake"]
 EVENT_COLUMNS = ["time", "session", "control_mode", "training_mode", "expert", "reason"]
 REPORT_COLUMNS = ["session", "actuation", "duration_s", "ticks", "manual_s", "assist_s", "takeover_s", "fault_s",
                   "human_interventions", "interventions_per_assist_minute", "tracking_rmse_deg", "max_abs_torque",
@@ -18,6 +18,9 @@ SESSION_FIELDS = {
     "wheel": ["timestamp_ns", "angle_deg", "throttle", "brake", "control_mode"],
     "telemetry": ["timestamp_ns", "speed_mps", "is_race_on", "game_timestamp_ms", "rpm", "steering_input"],
     "events": ["timestamp_ns", "control_mode", "training_mode", "expert", "reason"],
+    # Optional (run-ai.ps1 -Record): every AI prediction, including while the human corrects.
+    "predictions": ["generated_time_ns", "observation_time_ns", "predicted_angle_deg",
+                    "applied_target_deg", "predicted_throttle", "predicted_brake", "control_mode"],
 }
 
 
@@ -90,7 +93,21 @@ def _anchor(raws, end_time):
     return lambda ns: end_time + timedelta(microseconds=(int(ns) - last_ns) / 1000)
 
 
-def _read_stream(path, name):
+def _causal(raws, key):
+    """For time-ordered rows, return f(ns) -> latest row with raws[key] <= ns, or None. Call with nondecreasing ns."""
+    state = {"i": 0, "current": None}
+
+    def latest(ns):
+        while state["i"] < len(raws) and int(raws[state["i"]][key]) <= ns:
+            state["current"] = raws[state["i"]]
+            state["i"] += 1
+        return state["current"]
+    return latest
+
+
+def _read_stream(path, name, optional=False):
+    if optional and not (path / f"{name}.csv").exists():
+        return []
     with (path / f"{name}.csv").open(newline="") as handle:
         reader = csv.DictReader(handle)
         required = SESSION_FIELDS[name]
@@ -104,8 +121,8 @@ def session_rows(path, session=None, end_time=None, allow_incomplete=False):
 
     wheel.csv is the sample stream; its `control_mode` column is the training label (non-expert
     samples are written as `assist`), so the true mode comes from the latest preceding events.csv
-    entry. Telemetry is joined causally: the latest sample at or before each wheel timestamp.
-    Returns (session, wheel_rows, event_rows).
+    entry. Telemetry and (optional) predictions are joined causally: the latest sample at or
+    before each wheel timestamp. Returns (session, wheel_rows, event_rows).
     """
     path = Path(path)
     meta = json.loads((path / "metadata.json").read_text())
@@ -115,24 +132,28 @@ def session_rows(path, session=None, end_time=None, allow_incomplete=False):
     wheel = _read_stream(path, "wheel")
     telemetry = _read_stream(path, "telemetry")
     events = _read_stream(path, "events")
+    predictions = _read_stream(path, "predictions", optional=True)
     if not wheel:
         return session, [], []
     at = _anchor(wheel, end_time or _mtime(path / "metadata.json"))
-    rows, tele_i, event_i, current, mode = [], 0, 0, None, None
+    latest_telemetry = _causal(telemetry, "timestamp_ns")
+    latest_event = _causal(events, "timestamp_ns")
+    latest_prediction = _causal(predictions, "generated_time_ns")
+    rows = []
     for raw in wheel:
         ns = int(raw["timestamp_ns"])
-        while tele_i < len(telemetry) and int(telemetry[tele_i]["timestamp_ns"]) <= ns:
-            current = telemetry[tele_i]
-            tele_i += 1
-        while event_i < len(events) and int(events[event_i]["timestamp_ns"]) <= ns:
-            mode = events[event_i]["control_mode"]
-            event_i += 1
-        rows.append(_row(time=at(ns), session=session, source="session", mode=mode or raw["control_mode"],
+        current, event, prediction = latest_telemetry(ns), latest_event(ns), latest_prediction(ns)
+        rows.append(_row(time=at(ns), session=session, source="session",
+                         mode=event["control_mode"] if event else raw["control_mode"],
                          steer_deg=_float(raw["angle_deg"]), gas=_float(raw["throttle"]), brake=_float(raw["brake"]),
                          speed_mps=_float(current["speed_mps"]) if current else None,
                          race_on=None if current is None else current["is_race_on"] == "1",
                          rpm=_float(current["rpm"]) if current else None,
-                         game_ms=int(current["game_timestamp_ms"]) if current else None))
+                         game_ms=int(current["game_timestamp_ms"]) if current else None,
+                         predicted_deg=_float(prediction["predicted_angle_deg"]) if prediction else None,
+                         target_deg=_float(prediction["applied_target_deg"]) if prediction else None,
+                         predicted_gas=_float(prediction["predicted_throttle"]) if prediction else None,
+                         predicted_brake=_float(prediction["predicted_brake"]) if prediction else None))
     event_rows = [dict(time=at(raw["timestamp_ns"]), session=session, control_mode=raw["control_mode"],
                        training_mode=raw["training_mode"], expert=raw["expert"] == "1", reason=raw["reason"])
                   for raw in events]
