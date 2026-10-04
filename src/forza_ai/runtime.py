@@ -141,6 +141,12 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if generation > handled_failure:
                 handled_failure = generation
                 worker.invalidate("inference_failure")
+                # Record why: a network timeout and a frame captured while the game was
+                # paused both latch the same disengagement but need different fixes.
+                counts = summary.setdefault("inference_failure_reasons", {})
+                counts[str(reason)] = counts.get(str(reason), 0) + 1
+                summary["last_inference_failure"] = str(reason)
+                print(f"\ninference failure: {reason}", flush=True)
                 return True
             return False
 
