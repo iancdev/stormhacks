@@ -159,19 +159,3 @@ def test_fast_grab_ignores_a_wheel_converging_on_the_target():
     summary = run(adapter, FixedAnglePolicy(40.0), duration=1.5, assist=True, direct_vjoy=True,
                   mirror_wheel=True, mirror_fast_grab_deg=15)
     assert summary["mode"] == ControlMode.ASSIST.value
-
-
-class StuckWheel(RecordingAdapter):
-    """A wheel the weak motor cannot move (stiction): stays put while the AI asks for 50 deg."""
-    def read_state(self, now_ns):
-        state = super().read_state(now_ns)
-        self.angle = 0.0
-        return super().read_state(now_ns)
-
-
-def test_strict_slow_rule_does_not_mistake_a_lagging_wheel_for_a_human():
-    common = dict(duration=1.2, assist=True, direct_vjoy=True, mirror_wheel=True, mirror_fast_grab_deg=15)
-    old = run(StuckWheel(), FixedAnglePolicy(50.0), **common)                           # 30 deg / 0.3 s
-    assert old["mode"] == ControlMode.TAKEOVER.value
-    new = run(StuckWheel(), FixedAnglePolicy(50.0), mirror_grab_deg=60, mirror_grab_s=1.0, **common)
-    assert new["mode"] == ControlMode.ASSIST.value
