@@ -263,7 +263,7 @@ def _read_source(path, *, diagnostic_issues=None):
                     or any(v is None for v in row.values()) for row in timing_rows)
                     or [_integer(row['frame'], 'timing frame') for row in timing_rows] != frame_ids):
                 raise ValueError('timing sidecar frame coverage differs from labels')
-        if artifact.parent.name == 'hud':
+        if artifact.parent == path / 'hud':
             if artifact.suffix != '.png' or artifact.stem not in expected_hud:
                 raise ValueError('unexpected HUD patch filename')
             with Image.open(artifact) as image:
@@ -283,12 +283,8 @@ def import_recording(source, destination, *, expert_mode=None, exclude_sessions=
     if destination.exists() or destination.is_symlink() or destination.resolve().is_relative_to(source):
         raise ValueError('destination must be new and outside the source recording')
     metadata, _ = _read_source(source)
-    exclusions = []
-    if exclude_sessions is not None:
-        exclusions = [line.split('#', 1)[0].strip() for line in Path(exclude_sessions).read_text().splitlines()]
-        exclusions = [prefix for prefix in exclusions if prefix]
-        if any(metadata['session'].startswith(prefix) for prefix in exclusions):
-            raise ValueError('source session matches an explicitly configured exclusion prefix')
+    from forza_ai.data.exclusions import enforce_exclusions
+    exclusions = enforce_exclusions(metadata['session'], additional=exclude_sessions)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='forza-import-', dir=destination.parent) as temporary:
         staging = Path(temporary) / 'recording'

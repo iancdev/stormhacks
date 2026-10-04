@@ -295,14 +295,22 @@ forza-train import-recording SOURCE DEST --expert-mode manual --exclude-sessions
 forza-train validate DATASET
 ```
 
-Exclusion rules are **explicit**, not automatically loaded from the current
-working directory. `--exclude-sessions PATH` reads nonempty session-ID prefixes,
-ignores `#` comments, rejects matching parents before writing, and records the
-checked prefixes in the imported manifest. Renaming a folder does not change the
-source session ID. The repository's `config/exclude_sessions.txt` is an operator
-policy; use this option when preparing the training dataset. It is not a global
-retroactive training filter: previously imported excluded sessions must be kept
-out of that dataset. No original recordings are deleted.
+Exclusions are mandatory for normal import and production session loading
+(including train/resume/evaluate and already-imported datasets). A checkout reads
+its `config/exclude_sessions.txt`; an installed wheel uses the bundled policy
+copy. Missing policy files fail closed. Current defaults exclude the parent
+prefixes `20261003_150225` and `20261003_152123`; the supplied `20261003_152944`
+sample is allowed. Checks use source IDs and split groups, including nested
+original metadata, so renaming a folder or an imported artifact does not bypass
+policy. Direct production splitting also checks the identities.
+
+`--exclude-sessions PATH` adds prefixes to mandatory defaults; it never replaces
+them. Checked prefixes are recorded in new import manifests, but production loads
+recheck the current policy rather than trusting that historical list. Updating
+repository exclusions requires updating the bundled `src/forza_ai/data/exclude_sessions.txt`
+copy for wheel distributions; a regression test enforces equality. Diagnostic-only
+read-only inspection remains available for excluded sources, without admitting
+them to production splits. No original recordings are changed or deleted.
 
 `inspect_recording_for_diagnostics(source, expert_mode="manual")` remains an
 explicit read-only fallback for unresolved producer variants. Its results always
