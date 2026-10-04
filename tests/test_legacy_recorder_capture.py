@@ -342,7 +342,8 @@ def assert_frame_accounting(metadata):
 
 
 def test_default_holdback_discards_final_frames_without_false_saved_count(record, monkeypatch, tmp_path):
-    assert record.argument_parser().parse_args(["record"]).drop_seconds == 5
+    # 10 s: real sessions showed mistakes building up to ~12 s before a reset.
+    assert record.argument_parser().parse_args(["record"]).drop_seconds == 10
     _, camera, readers = install_hardware_mocks(
         record, monkeypatch, tmp_path, [image(40), image(80), image(120)])
     record.main(["record"])
