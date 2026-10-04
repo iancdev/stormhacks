@@ -42,3 +42,19 @@ def test_no_breakaway_push_inside_deadband_and_limit_still_applies():
 def test_negative_friction_rejected():
     with pytest.raises(ValueError):
         SteeringConfig(friction_ff=-0.1)
+
+
+def test_steer_gain_scales_the_target_before_limits():
+    config = SteeringConfig(kp=0.01, kd=0.0, torque_limit=0.3, steer_gain=1.6, target_rate_deg_s=1000)
+    _, target = torque_for(config, 10.0, 0.0)
+    assert target == pytest.approx(16.0)
+    capped = SteeringConfig(steer_gain=2.0, target_limit_deg=30.0, target_rate_deg_s=1000)
+    _, target = torque_for(capped, 20.0, 0.0)
+    assert target == pytest.approx(30.0)
+
+
+def test_steer_gain_bounds():
+    with pytest.raises(ValueError):
+        SteeringConfig(steer_gain=0)
+    with pytest.raises(ValueError):
+        SteeringConfig(steer_gain=5)

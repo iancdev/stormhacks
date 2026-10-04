@@ -23,7 +23,13 @@ param(
     [double]$TorqueLimit = 0.22,
     [double]$Kp = 0.01,
     [double]$Kd = 0.005,
-    [double]$Friction = 0.15
+    [double]$Friction = 0.15,
+    # Steering booster: the model steers about half as much as a human in corners (shadow test).
+    [ValidateRange(0.5, 3.0)]
+    [double]$SteerGain = 1.6,
+    # How fast the steering target may change (deg/s); the runtime default of 60 lags quick corners.
+    [ValidateRange(30, 400)]
+    [double]$TargetRate = 150
 )
 
 # Run on the game PC from anywhere: .\scripts\run-ai.ps1 [-Mode Mirror|Motor|Vjoy] [-DashboardHost 0.0.0.0]
@@ -47,6 +53,7 @@ $runtimeArgs = @("-m", "forza_ai.runtime", "--backend", "windows",
     "--inference-host", $InferenceHost, "--capture-config", (Join-Path $repo "config/capture.json"),
     "--assist", "--auto-pedals", "--arm-button", $ArmButton, "--takeover-button", $TakeoverButton,
     "--torque-limit", $TorqueLimit, "--duration", $Duration, "--status-csv", $status,
+    "--steer-gain", $SteerGain, "--target-rate", $TargetRate,
     "--dashboard-host", $DashboardHost, "--dashboard-port", $DashboardPort)
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
 if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel") }
@@ -59,6 +66,7 @@ if ($DashboardHost -eq "0.0.0.0") {
 }
 $how = if ($Mode -eq "Mirror") { "or touch a pedal, or hold the wheel away from the AI" } else { "or touch a pedal" }
 Write-Host "Mode: $Mode | ARM button $ArmButton | takeover button $TakeoverButton ($how)"
+Write-Host "Steering gain x$SteerGain, target rate $TargetRate deg/s"
 Write-Host "Dashboard: http://${DashboardHost}:$DashboardPort  (from the laptop: http://169.254.218.1:$DashboardPort)"
 Write-Host "Log: $status"
 Push-Location $repo

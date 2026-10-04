@@ -535,6 +535,9 @@ def main(argv=None):
     parser.add_argument("--torque-limit", type=float, default=0.15)
     parser.add_argument("--kp", type=float, default=0.008, help="PD gain per physical degree; requires tuning")
     parser.add_argument("--kd", type=float, default=0.001, help="PD damping gain per degree/second")
+    parser.add_argument("--steer-gain", type=float, default=1.0,
+                        help="multiply the model's steering angle (e.g. 1.6 for a model that understeers); "
+                             "applies to the motor target and direct vJoy steering")
     parser.add_argument("--friction", type=float, default=0.0,
                         help="static-friction compensation: extra torque toward the target when off by more "
                              "than --friction-deadband degrees (TMX needs ~0.2 to break free); 0 = off")
@@ -612,6 +615,7 @@ def main(argv=None):
             parser.error(f"output already exists; choose a new path: {output_path}")
     config = SteeringConfig(torque_limit=args.torque_limit, kp=args.kp, kd=args.kd,
                             friction_ff=args.friction, friction_deadband_deg=args.friction_deadband,
+                            steer_gain=args.steer_gain,
                             target_rate_deg_s=args.target_rate, target_limit_deg=args.target_limit)
     mapping = {}
     for pair in args.button_map:

@@ -29,6 +29,9 @@ class SteeringConfig:
     # of the PD term so small errors still move the wheel while kp stays low. 0 disables it.
     friction_ff: float = 0.0
     friction_deadband_deg: float = 1.5
+    # Multiplies the policy's angle before limiting/slewing (a model that understeers can be
+    # boosted). Applies to whatever consumes the target: motor tracking or direct vJoy steering.
+    steer_gain: float = 1.0
 
     def __post_init__(self):
         for name in ("kp", "kd", "torque_limit", "target_limit_deg",
@@ -39,6 +42,8 @@ class SteeringConfig:
                 raise ValueError(f"{name} must be finite and nonnegative")
         if not 0 < self.torque_limit <= 1:
             raise ValueError("torque_limit must be in (0, 1]")
+        if not math.isfinite(self.steer_gain) or not 0 < self.steer_gain <= 3:
+            raise ValueError("steer_gain must be within (0, 3]")
         if not 0 < self.target_limit_deg <= self.physical_limit_deg:
             raise ValueError("target_limit_deg must be within physical travel")
         if self.target_rate_deg_s <= 0:
@@ -153,7 +158,7 @@ class SteeringController:
 
         self._last_command_ns = command.generated_time_ns
         dt = 0.0 if gap is None else gap / 1e9
-        requested = clamp(command.target_angle_deg, self.config.target_limit_deg)
+        requested = clamp(command.target_angle_deg * self.config.steer_gain, self.config.target_limit_deg)
         self.target += clamp(requested - self.target, self.config.target_rate_deg_s * dt)
         error = self.target - wheel.angle_deg
         torque = self.config.kp * error - self.config.kd * self._velocity
