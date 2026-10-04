@@ -423,6 +423,30 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 # labels must be sampled after that boundary, not merely written later.
                 expert_after_ns = time.monotonic_ns() + int(takeover_settle_ms * 1e6)
             if engaged_at_tick_start and status.mode != ControlMode.ASSIST:
+                # One clear line per disengagement, plus a bounded list in the run summary/report.
+                cause = {
+                    "manual_takeover": "you took over (button, wheel grab or pedal)",
+                    "inference_failure": "prediction failed: " + str(summary.get("last_inference_failure")),
+                    "stale_command": "prediction arrived too late", "stale_observation": "frame too old",
+                    "command_expired": "prediction expired", "no_command": "no prediction available",
+                    "game_not_foreground": "Forza not the active window", "race_inactive": "game paused / not racing",
+                    "telemetry_unavailable_or_paused": "telemetry stopped or game paused",
+                    "frame_race_inactive": "frame captured while paused", "control_loop_gap": "control loop stalled",
+                    "actuation_deadline_expired": "motor/vJoy output too late",
+                }.get(status.reason, status.reason)
+                elapsed = time.monotonic() - started
+                entry = {"t_s": round(elapsed, 2), "reason": status.reason, "cause": cause,
+                         "mode": status.mode.value, "input": input_error or "ready",
+                         "speed_kmh": round(vehicle.speed_mps * 3.6, 1) if vehicle is not None else None,
+                         "wheel_deg": round(wheel.angle_deg, 1), "target_deg": round(status.target_angle_deg, 1)}
+                log = summary.setdefault("disengagements", [])
+                if len(log) < 500:
+                    log.append(entry)
+                counts = summary.setdefault("disengagement_counts", {})
+                counts[status.reason] = counts.get(status.reason, 0) + 1
+                print("\n" + f"DISENGAGED at {elapsed:7.1f}s: {cause}  [{status.reason}]  "
+                      f"speed {entry['speed_kmh']} km/h, wheel {entry['wheel_deg']:+.1f}, target {entry['target_deg']:+.1f}",
+                      flush=True)
                 pending_arm = False
             if status.mode == ControlMode.ASSIST or status.mode == ControlMode.FAULT:
                 human_control = False
