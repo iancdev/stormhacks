@@ -49,6 +49,10 @@ param(
     [double]$CornerAngleDeg = 15,
     # AI steers only; you drive the gas and brake (pressing them does not take over).
     [switch]$HumanPedals,
+    # Re-engage automatically after a network blip (timeout / late prediction) within this many
+    # seconds; never after a human takeover, pause or fault. 0 = off (press ARM again).
+    [ValidateRange(0, 10)]
+    [double]$AutoRearmS = 3,
     # The laptop serves a steering-only (v1) model instead of a steering+pedal (v2) one.
     [switch]$SteeringOnlyModel
 )
@@ -74,7 +78,7 @@ $runtimeArgs = @("-m", "forza_ai.runtime", "--backend", "windows",
     "--inference-host", $InferenceHost, "--capture-config", (Join-Path $repo "config/capture.json"),
     "--assist", "--arm-button", $ArmButton, "--takeover-button", $TakeoverButton,
     "--torque-limit", $TorqueLimit, "--duration", $Duration, "--status-csv", $status,
-    "--steer-gain", $SteerGain, "--target-rate", $TargetRate,
+    "--steer-gain", $SteerGain, "--target-rate", $TargetRate, "--auto-rearm-s", $AutoRearmS,
     "--dashboard-host", $DashboardHost, "--dashboard-port", $DashboardPort)
 if ($SteeringOnlyModel) {
     # v1 model: no pedal predictions exist, so your pedals always drive.
@@ -98,7 +102,7 @@ if ($DashboardHost -eq "0.0.0.0") {
 $pedalHow = if ($HumanPedals) { "" } else { "or touch a pedal, " }
 $how = if ($Mode -eq "Mirror") { "${pedalHow}or hold the wheel away from the AI" } else { "${pedalHow}".TrimEnd(", ".ToCharArray()) }
 Write-Host "Mode: $Mode | ARM button $ArmButton | takeover button $TakeoverButton ($how)"
-Write-Host "Steering gain x$SteerGain, target rate $TargetRate deg/s"
+Write-Host "Steering gain x$SteerGain, target rate $TargetRate deg/s, auto re-engage after blips: $(if ($AutoRearmS) { "within $AutoRearmS s" } else { 'off' })"
 if ($HumanPedals) { Write-Host "Pedals: YOU drive gas and brake; the AI steers only" }
 else { Write-Host "AI pedals: throttle cap $ThrottleCap, ramp $ThrottleRate/s, speed cap $(if ($MaxSpeedKmh) { "$MaxSpeedKmh km/h" } else { 'off' }), brake x$BrakeGain, corner limit $(if ($CornerSpeedKmh) { "$CornerSpeedKmh km/h past $CornerAngleDeg deg" } else { 'off' })" }
 Write-Host "Dashboard: http://${DashboardHost}:$DashboardPort  (from the laptop: http://169.254.218.1:$DashboardPort)"

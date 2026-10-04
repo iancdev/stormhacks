@@ -45,7 +45,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         auto_pedals=False, pedal_override=0.05, dashboard_host="0.0.0.0",
         mirror_wheel=False, mirror_grab_deg=30.0, mirror_grab_s=0.3,
         throttle_cap=1.0, throttle_rate=0.0, max_speed_kmh=0.0,
-        brake_gain=1.0, corner_speed_kmh=0.0, corner_angle_deg=15.0, corner_brake=0.6):
+        brake_gain=1.0, corner_speed_kmh=0.0, corner_angle_deg=15.0, corner_brake=0.6,
+        auto_rearm_s=0.0):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -172,6 +173,10 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         # Damped AI throttle (auto pedals): capped, ramps up at throttle_rate per second, drops at
         # once, and is cut above max_speed_kmh. Starts from zero at every engagement.
         ai_throttle, ai_throttle_ns = 0.0, None
+        # Auto re-engage after a system blip (timeout / late prediction) within auto_rearm_s, never
+        # after a human takeover, a pause/foreground loss or a fault.
+        transient = {"inference_failure", "stale_command", "stale_observation", "command_expired", "no_command"}
+        blip_ns = None
         route_active = False
         human_control = bool(record_manual)
         expert_after_ns = 0
@@ -294,6 +299,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             engage_now = pending_arm and controller.command_error(command, time.monotonic_ns()) is None
             if engage_now:
                 pending_arm = False
+                if blip_ns is not None:
+                    summary["auto_rearms"] = summary.get("auto_rearms", 0) + 1
+                    blip_ns = None
             now_ns = time.monotonic_ns()
             status = controller.step(wheel, command, now_ns, engage=engage_now, takeover=takeover)
             # Motor mode: always forward the measured inputs, never the model's target angle.
@@ -399,6 +407,19 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 human_control = False
             elif status.mode == ControlMode.TAKEOVER and status.reason != "manual_takeover":
                 human_control = False
+            if auto_rearm_s and not shadow:
+                if (engaged_at_tick_start and status.mode == ControlMode.TAKEOVER
+                        and status.reason in transient and not takeover):
+                    blip_ns = time.monotonic_ns()
+                elif (takeover or status.mode in (ControlMode.ASSIST, ControlMode.FAULT)
+                        or (status.mode == ControlMode.TAKEOVER and status.reason not in transient)):
+                    blip_ns = None
+                if blip_ns is not None:
+                    if time.monotonic_ns() - blip_ns > auto_rearm_s * 1e9:
+                        blip_ns = None
+                    else:
+                        pending_arm = True
+                        active_arm_until = time.monotonic() + 0.2
             expert = (human_control and status.mode in (ControlMode.MANUAL, ControlMode.TAKEOVER)
                       and wheel.timestamp_ns >= expert_after_ns and input_error is None)
             if recorder is not None:
@@ -568,6 +589,9 @@ def main(argv=None):
                              "and brake in proportion to the excess; 0 = off")
     parser.add_argument("--corner-angle-deg", type=float, default=15.0,
                         help="steering angle (after --steer-gain) that counts as cornering for --corner-speed-kmh")
+    parser.add_argument("--auto-rearm-s", type=float, default=0.0,
+                        help="re-engage automatically if assistance dropped because of a network/timing blip "
+                             "(never after a human takeover, pause or fault) within this many seconds; 0 = off")
     parser.add_argument("--human-pedals", action="store_true",
                         help="use a steering+pedal (v2) model for steering only: your pedals drive the car "
                              "and pressing them does not take over")
@@ -766,6 +790,7 @@ def main(argv=None):
                      throttle_cap=args.throttle_cap, throttle_rate=args.throttle_rate,
                      max_speed_kmh=args.max_speed_kmh, brake_gain=args.brake_gain,
                      corner_speed_kmh=args.corner_speed_kmh, corner_angle_deg=args.corner_angle_deg,
+                     auto_rearm_s=args.auto_rearm_s,
                      auto_pedals=args.auto_pedals, pedal_override=args.pedal_override,
                      dashboard_host=args.dashboard_host)
     except KeyboardInterrupt:
