@@ -72,7 +72,7 @@ def test_cache_oom_releases_storage_and_falls_back(sessions, monkeypatch):
     plain = SteeringDataset(sessions, Preprocessing())
     data[0]
     with monkeypatch.context() as m:
-        m.setattr(torch.Tensor, 'clone', lambda _: (_ for _ in ()).throw(torch.OutOfMemoryError('test')))
+        m.setattr(torch.Tensor, 'clone', lambda _: (_ for _ in ()).throw(torch.cuda.OutOfMemoryError('test')))
         with pytest.warns(RuntimeWarning, match='continuing uncached'):
             equal_batch(data[0], plain[0])
     assert cache.max_bytes == cache.resident_bytes == 0
@@ -188,3 +188,24 @@ def test_insertion_oom_and_unrelated_errors(sessions, monkeypatch):
 def test_invalid_budget(budget):
     with pytest.raises(ValueError): engine.TrainConfig(cache_mib=budget)
     with pytest.raises(ValueError): PreprocessingCache(budget)
+
+
+@pytest.mark.parametrize('operation', ['get', 'put'])
+@pytest.mark.parametrize('kind', ['python', 'torch', 'allocator'])
+def test_oom_fallback_without_top_level_torch_alias(monkeypatch, operation, kind):
+    values = (torch.ones(3),)
+    cache = PreprocessingCache(1024)
+    cache.put('existing', values)
+    error = {'python': MemoryError('allocation'),
+             'torch': torch.cuda.OutOfMemoryError('allocation'),
+             'allocator': RuntimeError("DefaultCPUAllocator: can't allocate memory")}[kind]
+    monkeypatch.delattr(torch, 'OutOfMemoryError', raising=False)
+    def fail_clone(_):
+        raise error
+    monkeypatch.setattr(torch.Tensor, 'clone', fail_clone)
+    with pytest.warns(RuntimeWarning, match='continuing uncached'):
+        if operation == 'get': assert cache.get('existing') is None
+        else: cache.put('new', values)
+    assert cache.resident_bytes == cache.max_bytes == 0
+    assert not cache._entries
+    assert not cache._is_oom(RuntimeError('unrelated error'))

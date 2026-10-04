@@ -30,7 +30,12 @@ class PreprocessingCache:
     @staticmethod
     def _is_oom(error):
         # CPU allocators in some supported PyTorch releases raise RuntimeError.
-        return (isinstance(error, (MemoryError, torch.OutOfMemoryError))
+        # PyTorch 2.2 exposes only the CUDA alias, even for this CPU cache's
+        # exception classification. Looking up an absent top-level name while
+        # handling MemoryError must not replace it with AttributeError.
+        oom_type = getattr(torch, 'OutOfMemoryError',
+                           getattr(torch.cuda, 'OutOfMemoryError', MemoryError))
+        return (isinstance(error, (MemoryError, oom_type))
                 or "can't allocate memory" in str(error).lower()
                 or 'not enough memory' in str(error).lower())
 

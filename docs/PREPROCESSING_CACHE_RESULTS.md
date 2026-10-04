@@ -66,3 +66,18 @@ Final software verification: **535 tests and 197 subtests passed** in 25.06 s on
 the Mac. An earlier broad-suite attempt exhausted local disk space; after removing
 only this task's identified temporary fixtures, the complete rerun passed. No
 product fix was required for that environment failure.
+
+Compatibility follow-up: the supported PyTorch 2.2 release exposes the OOM class
+as `torch.cuda.OutOfMemoryError` rather than the newer top-level alias. The cache
+now uses version-safe lookup. Six regressions removing the top-level alias first
+reproduced the failure, then passed for both get/put with Python MemoryError,
+PyTorch OOM and CPU allocator RuntimeError. All 45 cache/pipeline tests passed;
+unrelated runtime exceptions continue to propagate. This simulates the missing
+alias on the installed PyTorch version, not a full PyTorch 2.2 environment run.
+
+Capacity caution: each image/speed/label entry occupies 158,408 tensor bytes, so
+256 MiB retains at most 1,694 samples. A 1,988-sample working set needs about
+300.33 MiB. If both training and validation passes exceed capacity, they can evict
+one another entirely; cache-copy overhead then brings no cross-epoch reuse.
+The small-fixture speedup above is not a larger-dataset guarantee. Full-trainer
+GPU measurements with hit/miss/eviction counts are pending separate approval.
