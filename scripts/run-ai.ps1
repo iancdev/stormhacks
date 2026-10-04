@@ -29,7 +29,17 @@ param(
     [double]$SteerGain = 1.6,
     # How fast the steering target may change (deg/s); the runtime default of 60 lags quick corners.
     [ValidateRange(30, 400)]
-    [double]$TargetRate = 150
+    [double]$TargetRate = 150,
+    # AI throttle damping (it was spinning the wheels): cap, max rise per second (drops instantly),
+    # optional speed limit (0 = off). Ignored with -HumanPedals.
+    [ValidateRange(0.05, 1.0)]
+    [double]$ThrottleCap = 0.7,
+    [ValidateRange(0, 10)]
+    [double]$ThrottleRate = 0.5,
+    [ValidateRange(0, 400)]
+    [double]$MaxSpeedKmh = 0,
+    # AI steers only; you drive the gas and brake (pressing them does not take over).
+    [switch]$HumanPedals
 )
 
 # Run on the game PC from anywhere: .\scripts\run-ai.ps1 [-Mode Mirror|Motor|Vjoy] [-DashboardHost 0.0.0.0]
@@ -51,10 +61,16 @@ $status = Join-Path $runs ("ai-" + $Mode.ToLower() + "-" + $stamp + ".csv")
 
 $runtimeArgs = @("-m", "forza_ai.runtime", "--backend", "windows",
     "--inference-host", $InferenceHost, "--capture-config", (Join-Path $repo "config/capture.json"),
-    "--assist", "--auto-pedals", "--arm-button", $ArmButton, "--takeover-button", $TakeoverButton,
+    "--assist", "--arm-button", $ArmButton, "--takeover-button", $TakeoverButton,
     "--torque-limit", $TorqueLimit, "--duration", $Duration, "--status-csv", $status,
     "--steer-gain", $SteerGain, "--target-rate", $TargetRate,
     "--dashboard-host", $DashboardHost, "--dashboard-port", $DashboardPort)
+if ($HumanPedals) {
+    $runtimeArgs += "--human-pedals"
+} else {
+    $runtimeArgs += @("--auto-pedals", "--throttle-cap", $ThrottleCap, "--throttle-rate", $ThrottleRate,
+                      "--max-speed-kmh", $MaxSpeedKmh)
+}
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
 if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel") }
 # --motor-update-ms/--torque-step: the TMX queues commands sent every 10 ms and falls further behind.
@@ -64,9 +80,12 @@ if ($Mode -ne "Vjoy") { $runtimeArgs += @("--kp", $Kp, "--kd", $Kd, "--friction"
 if ($DashboardHost -eq "0.0.0.0") {
     Write-Warning "Dashboard on ALL networks: anyone who can reach this PC can open it and press ARM."
 }
-$how = if ($Mode -eq "Mirror") { "or touch a pedal, or hold the wheel away from the AI" } else { "or touch a pedal" }
+$pedalHow = if ($HumanPedals) { "" } else { "or touch a pedal, " }
+$how = if ($Mode -eq "Mirror") { "${pedalHow}or hold the wheel away from the AI" } else { "${pedalHow}".TrimEnd(", ".ToCharArray()) }
 Write-Host "Mode: $Mode | ARM button $ArmButton | takeover button $TakeoverButton ($how)"
 Write-Host "Steering gain x$SteerGain, target rate $TargetRate deg/s"
+if ($HumanPedals) { Write-Host "Pedals: YOU drive gas and brake; the AI steers only" }
+else { Write-Host "AI pedals: throttle cap $ThrottleCap, ramp $ThrottleRate/s, speed cap $(if ($MaxSpeedKmh) { "$MaxSpeedKmh km/h" } else { 'off' })" }
 Write-Host "Dashboard: http://${DashboardHost}:$DashboardPort  (from the laptop: http://169.254.218.1:$DashboardPort)"
 Write-Host "Log: $status"
 Push-Location $repo

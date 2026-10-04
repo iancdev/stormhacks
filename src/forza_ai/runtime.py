@@ -43,7 +43,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         route_button=None, recorder=None, record_manual=False, takeover_settle_ms=100.0,
         dashboard_port=None, run_report=None, direct_vjoy=False, direct_override_deg=20.0,
         auto_pedals=False, pedal_override=0.05, dashboard_host="0.0.0.0",
-        mirror_wheel=False, mirror_grab_deg=30.0, mirror_grab_s=0.3):
+        mirror_wheel=False, mirror_grab_deg=30.0, mirror_grab_s=0.3,
+        throttle_cap=1.0, throttle_rate=0.0, max_speed_kmh=0.0):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -93,6 +94,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             raise ValueError("shadow mode cannot engage assistance")
         if direct_vjoy and (not math.isfinite(direct_override_deg) or direct_override_deg <= 0):
             raise ValueError("direct_override_deg must be finite and positive")
+        if not 0 < throttle_cap <= 1 or throttle_rate < 0 or max_speed_kmh < 0:
+            raise ValueError("throttle_cap must be in (0, 1]; throttle_rate and max_speed_kmh nonnegative")
         if mirror_wheel and not direct_vjoy:
             raise ValueError("mirror_wheel is a direct_vjoy option: Forza follows the AI, the wheel only mirrors it")
         if mirror_wheel and not (mirror_grab_deg > 0 and mirror_grab_s > 0):
@@ -163,6 +166,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         previous_buttons = None
         previous_pedal_pressed = False
         grab_started_ns = None
+        # Damped AI throttle (auto pedals): capped, ramps up at throttle_rate per second, drops at
+        # once, and is cut above max_speed_kmh. Starts from zero at every engagement.
+        ai_throttle, ai_throttle_ns = 0.0, None
         route_active = False
         human_control = bool(record_manual)
         expert_after_ns = 0
@@ -324,6 +330,18 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if direct_vjoy and not mirror_wheel:
                 status = replace(status, torque=0.0)
             virtual = virtual_driving_state(wheel, status, command, direct_vjoy, auto_pedals)
+            if auto_pedals and status.mode == ControlMode.ASSIST:
+                wanted = min(virtual.throttle, throttle_cap)
+                if max_speed_kmh and vehicle is not None and vehicle.speed_mps * 3.6 > max_speed_kmh:
+                    wanted = 0.0
+                tick_ns = time.monotonic_ns()
+                if throttle_rate and ai_throttle_ns is not None and wanted > ai_throttle:
+                    wanted = min(wanted, ai_throttle + throttle_rate * (tick_ns - ai_throttle_ns) / 1e9)
+                ai_throttle, ai_throttle_ns = wanted, tick_ns
+                if virtual.throttle != wanted:
+                    virtual = replace(virtual, throttle=wanted)
+            else:
+                ai_throttle, ai_throttle_ns = 0.0, time.monotonic_ns()
             try:
                 if (direct_vjoy or auto_pedals) and status.mode == ControlMode.ASSIST:
                     actuation_deadline = min(wheel.timestamp_ns + controller.config.max_wheel_age_ns,
@@ -523,6 +541,16 @@ def main(argv=None):
     selection.add_argument("--inference-host", help="desktop LAN address for remote image-plus-speed inference")
     parser.add_argument("--auto-pedals", action="store_true",
                         help="use a v2 driving model for throttle/brake; either physical pedal takes over")
+    parser.add_argument("--throttle-cap", type=float, default=1.0,
+                        help="--auto-pedals: maximum AI throttle, 0-1 (e.g. 0.7)")
+    parser.add_argument("--throttle-rate", type=float, default=0.0,
+                        help="--auto-pedals: AI throttle may rise at most this much per second (e.g. 0.5); "
+                             "it can always drop at once. 0 = no ramp")
+    parser.add_argument("--max-speed-kmh", type=float, default=0.0,
+                        help="--auto-pedals: no AI throttle above this speed; 0 = off")
+    parser.add_argument("--human-pedals", action="store_true",
+                        help="use a steering+pedal (v2) model for steering only: your pedals drive the car "
+                             "and pressing them does not take over")
     parser.add_argument("--pedal-override", type=float, default=0.05,
                         help="physical pedal fraction that takes over (default .05)")
     parser.add_argument("--inference-port", type=int, default=8765)
@@ -654,7 +682,7 @@ def main(argv=None):
             parser.error("--target-angle cannot be combined with a driving model")
         if args.inference_host:
             from forza_ai.network import RemotePolicy
-            policy = RemotePolicy(args.inference_host, port=args.inference_port, timeout_s=args.network_timeout, driving=args.auto_pedals)
+            policy = RemotePolicy(args.inference_host, port=args.inference_port, timeout_s=args.network_timeout, driving=args.auto_pedals or args.human_pedals)
         else:
             from forza_ai.policies.live import LiveModelPolicy
             policy = LiveModelPolicy(args.model)
@@ -663,6 +691,8 @@ def main(argv=None):
         if args.backend == "windows" and abs(target) > 15:
             parser.error("stationary Windows placeholder tests are limited to +/-15 degrees")
         policy = SweepPolicy(target, args.sweep_hold) if args.sweep else FixedAnglePolicy(target)
+    if args.human_pedals and args.auto_pedals:
+        parser.error("--human-pedals and --auto-pedals are opposites; choose one")
     if args.auto_pedals and not getattr(policy, 'driving', False):
         parser.error('--auto-pedals requires a v2 driving model; selected artifact is steering-only')
     reserved = {value for value in (args.takeover_button, args.arm_button, args.route_button) if value is not None}
@@ -713,6 +743,8 @@ def main(argv=None):
                      dashboard_port=args.dashboard_port, run_report=args.run_report,
                      direct_vjoy=args.direct_vjoy, direct_override_deg=args.override_deg,
                      mirror_wheel=args.mirror_wheel, mirror_grab_deg=args.mirror_grab_deg,
+                     throttle_cap=args.throttle_cap, throttle_rate=args.throttle_rate,
+                     max_speed_kmh=args.max_speed_kmh,
                      auto_pedals=args.auto_pedals, pedal_override=args.pedal_override,
                      dashboard_host=args.dashboard_host)
     except KeyboardInterrupt:
