@@ -66,6 +66,8 @@ param(
     [ValidateRange(-1, 127)]
     [int]$VoiceButton = -1,
     [string]$VoiceDevice = "",
+    # Speaker for APEX replies (python -m sounddevice lists them); default = Windows default output.
+    [string]$VoiceOutput = "",
     # Re-engage automatically after a network blip (timeout / late prediction) within this many
     # seconds; never after a human takeover, pause or fault. 0 = off (press ARM again).
     [ValidateRange(0, 10)]
@@ -145,6 +147,7 @@ if ($Voice) {
     $runtimeArgs += "--voice"
     if ($VoiceButton -ge 0) { $runtimeArgs += @("--voice-button", $VoiceButton) }
     if ($VoiceDevice) { $runtimeArgs += @("--voice-device", $VoiceDevice) }
+    if ($VoiceOutput) { $runtimeArgs += @("--voice-output", $VoiceOutput) }
 }
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
 if ($Mode -eq "Mirror") {

@@ -733,6 +733,7 @@ def main(argv=None):
     parser.add_argument("--voice-device", help="--voice: microphone name or index (python -m sounddevice)")
     parser.add_argument("--voice-model", help="--voice: Gemini model id (default gemini-3.8-flash)")
     parser.add_argument("--no-voice-reply", action="store_true", help="--voice: print replies, don't speak them")
+    parser.add_argument("--voice-output", help="--voice: speaker for replies, name or index (default: Windows default)")
     parser.add_argument("--inference-port", type=int, default=8765)
     parser.add_argument("--network-timeout", type=float, default=0.2, help="total request deadline in seconds")
     parser.add_argument("--target-angle", type=float, default=None, help="fixed target, or positive sweep amplitude; default 5")
@@ -891,7 +892,9 @@ def main(argv=None):
         device = int(args.voice_device) if args.voice_device and args.voice_device.isdigit() else args.voice_device
         try:
             voice = build_voice(ptt_button=args.voice_button, device=device, model=args.voice_model,
-                                speak=not args.no_voice_reply)
+                                speak=not args.no_voice_reply,
+                                output_device=int(args.voice_output) if args.voice_output and args.voice_output.isdigit()
+                                else args.voice_output)
         except (RuntimeError, ImportError) as error:
             parser.error(f"--voice: {error}")
     elif args.voice_button is not None:

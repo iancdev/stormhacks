@@ -196,8 +196,8 @@ class GeminiBrain:
 
 
 class GeminiTTS:
-    def __init__(self, client, voice=None):
-        self.client = client
+    def __init__(self, client, voice=None, device=None):
+        self.client, self.device = client, device
         self.voice = voice or os.environ.get("APEX_VOICE", TTS_VOICE)
 
     def say(self, text):
@@ -209,7 +209,7 @@ class GeminiTTS:
             response_format={"type": "audio", "mime_type": "audio/l16", "sample_rate": TTS_RATE},
             generation_config={"speech_config": [{"voice": self.voice}]}, store=False)
         pcm = np.frombuffer(base64.b64decode(interaction.output_audio.data), dtype="<i2")
-        sounddevice.play(pcm, TTS_RATE, blocking=True)
+        sounddevice.play(pcm, TTS_RATE, blocking=True, device=self.device)
 
 
 class KeywordBrain:
@@ -394,13 +394,13 @@ def _key():
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
 
-def build(*, ptt_button=None, device=None, model=None, speak=True, wake_word=True, log=print):
+def build(*, ptt_button=None, device=None, model=None, speak=True, wake_word=True, log=print, output_device=None):
     """Assistant from GEMINI_API_KEY (Google AI Studio)."""
     key = _key()
     if not key:
         raise RuntimeError("voice needs GEMINI_API_KEY (Google AI Studio)")
     brain = GeminiBrain(key, model)
-    return VoiceAssistant(brain, GeminiTTS(brain.client) if speak else None, wake_word=wake_word,
+    return VoiceAssistant(brain, GeminiTTS(brain.client, device=output_device) if speak else None, wake_word=wake_word,
                           ptt_button=ptt_button, device=device, log=log)
 
 
@@ -409,9 +409,11 @@ def main(argv=None):
     parser.add_argument("--text", help="interpret this sentence (no microphone)")
     parser.add_argument("--listen", action="store_true", help="use the microphone; Ctrl+C to stop")
     parser.add_argument("--device", help="microphone name or index (python -m sounddevice lists them)")
+    parser.add_argument("--output", help="speaker for replies, name or index (default: Windows default)")
     parser.add_argument("--model", default=None)
     parser.add_argument("--no-speak", action="store_true")
     args = parser.parse_args(argv)
+    output = int(args.output) if args.output and args.output.isdigit() else args.output
     from forza_ai.tuning import LiveTuning
     tuning = LiveTuning(throttle_cap=0.7, throttle_rate=0.5, max_speed_kmh=0.0, brake_gain=1.5,
                         corner_speed_kmh=130.0, steer_gain=1.6)
@@ -428,7 +430,7 @@ def main(argv=None):
     threading.Thread(target=drain, daemon=True).start()
     if args.text:
         brain = GeminiBrain(_key(), args.model) if _key() else KeywordBrain()
-        speaker = GeminiTTS(brain.client) if _key() and not args.no_speak else None
+        speaker = GeminiTTS(brain.client, device=output) if _key() and not args.no_speak else None
         assistant = VoiceAssistant(brain, speaker)
         assistant._events, assistant._tuning = events, tuning
         decision = assistant.handle(text=args.text)
@@ -438,7 +440,7 @@ def main(argv=None):
     if not args.listen:
         parser.error("choose --text or --listen")
     device = int(args.device) if args.device and args.device.isdigit() else args.device
-    assistant = build(device=device, model=args.model, speak=not args.no_speak)
+    assistant = build(device=device, model=args.model, speak=not args.no_speak, output_device=output)
     assistant.start(events, tuning)
     try:
         while True:
