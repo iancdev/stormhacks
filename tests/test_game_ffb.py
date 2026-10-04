@@ -81,3 +81,21 @@ def test_adapter_registers_and_removes_vjoy_ffb_callback():
     plain = Rig(); plain.sdk.FfbRegisterGenCB = Mock()
     plain.adapter().close()
     plain.sdk.FfbRegisterGenCB.assert_not_called()                     # off by default
+
+
+class JitteryGameForce(RecordingAdapter):
+    """Game force alternating +0.3 / -0.1 every read (mean +0.1): pure jitter around a small pull."""
+    def game_force(self, now_ns, max_age_ns=150_000_000):
+        return 0.3 if self.reads % 2 else -0.1
+
+
+def test_smoothing_removes_jitter_and_keeps_the_average():
+    from forza_ai.control import SteeringConfig
+    raw = JitteryGameForce(); run(raw, FixedAnglePolicy(0), duration=.6, assist=False, ffb_scale=1.0,
+                                  config=SteeringConfig(torque_limit=0.3))
+    smooth = JitteryGameForce(); run(smooth, FixedAnglePolicy(0), duration=.6, assist=False, ffb_scale=1.0,
+                                     ffb_smooth_ms=50, config=SteeringConfig(torque_limit=0.3))
+    tail_raw, tail_smooth = raw.torques[-21:-1], smooth.torques[-21:-1]      # last entry = zero at shutdown
+    assert max(tail_raw) - min(tail_raw) > 0.3                     # raw swings +0.3 / -0.1
+    assert max(tail_smooth) - min(tail_smooth) < 0.06               # smoothed: small ripple
+    assert abs(sum(tail_smooth) / len(tail_smooth) - 0.1) < 0.03    # around the true average pull

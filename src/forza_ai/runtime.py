@@ -47,7 +47,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         mirror_fast_grab_s=0.08,
         throttle_cap=1.0, throttle_rate=0.0, max_speed_kmh=0.0,
         brake_gain=1.0, corner_speed_kmh=0.0, corner_angle_deg=15.0, corner_brake=0.6,
-        auto_rearm_s=0.0, ffb_scale=0.0, ffb_sign=1.0):
+        auto_rearm_s=0.0, ffb_scale=0.0, ffb_sign=1.0, ffb_smooth_ms=0.0):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -177,6 +177,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         # Fast grab: a lagging motor moves the wheel TOWARD the AI's angle; a human pulling moves it
         # AWAY, against the motor. Far enough off and still moving away for a moment = takeover.
         grab_away_since_ns, previous_deviation = None, None
+        # Low-pass filter for the forwarded game force (FH4 updates it ~60 Hz and it feels jittery).
+        game_filtered, game_filtered_ns = 0.0, None
         # Damped AI throttle (auto pedals): capped, ramps up at throttle_rate per second, drops at
         # once, and is cut above max_speed_kmh. Starts from zero at every engagement.
         ai_throttle, ai_throttle_ns = 0.0, None
@@ -401,8 +403,16 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                         and status.mode in (ControlMode.MANUAL, ControlMode.TAKEOVER)
                         and hasattr(adapter, "game_force")):
                     # Human driving: replay the game's force feedback (sent to vJoy) on the real wheel.
-                    game_torque = max(-controller.config.torque_limit, min(controller.config.torque_limit,
-                                      ffb_sign * ffb_scale * adapter.game_force(time.monotonic_ns())))
+                    raw = ffb_sign * ffb_scale * adapter.game_force(time.monotonic_ns())
+                    if ffb_smooth_ms > 0:
+                        tick_ns = time.monotonic_ns()
+                        dt = 0.0 if game_filtered_ns is None else (tick_ns - game_filtered_ns) / 1e9
+                        alpha = dt / (ffb_smooth_ms / 1000 + dt) if dt > 0 else 0.0
+                        game_filtered += alpha * (raw - game_filtered)
+                        game_filtered_ns, raw = tick_ns, game_filtered
+                    game_torque = max(-controller.config.torque_limit, min(controller.config.torque_limit, raw))
+                else:
+                    game_filtered, game_filtered_ns = 0.0, None     # eases back in after every AI stint
                 if ffb_scale:
                     summary["game_ffb_torque"] = round(game_torque, 4)       # 0 while the AI drives
                 if status.torque:
@@ -659,6 +669,8 @@ def main(argv=None):
     parser.add_argument("--forward-ffb", type=float, default=0.0,
                         help="replay the game's force feedback (sent to vJoy) on the TMX while YOU drive "
                              "(manual/takeover), scaled by this factor (e.g. 0.5); 0 = off")
+    parser.add_argument("--ffb-smooth-ms", type=float, default=0.0,
+                        help="smooth the replayed game force with this time constant (e.g. 50); 0 = raw")
     parser.add_argument("--ffb-sign", type=float, choices=(-1.0, 1.0), default=1.0,
                         help="direction of the replayed game force; flip to -1 if it pushes the wrong way")
     parser.add_argument("--human-pedals", action="store_true",
@@ -865,6 +877,7 @@ def main(argv=None):
                      max_speed_kmh=args.max_speed_kmh, brake_gain=args.brake_gain,
                      corner_speed_kmh=args.corner_speed_kmh, corner_angle_deg=args.corner_angle_deg,
                      auto_rearm_s=args.auto_rearm_s, ffb_scale=args.forward_ffb, ffb_sign=args.ffb_sign,
+                     ffb_smooth_ms=args.ffb_smooth_ms,
                      auto_pedals=args.auto_pedals, pedal_override=args.pedal_override,
                      dashboard_host=args.dashboard_host)
     except KeyboardInterrupt:
