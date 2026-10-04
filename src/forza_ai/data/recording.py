@@ -304,7 +304,7 @@ def import_recording(source, destination, *, expert_mode=None, exclude_sessions=
             'expert_mode': 'manual', 'exclusion_prefixes_checked': exclusions,
             'timing': TIMING, 'source_metadata': metadata,
         }
-        (staging / 'metadata.json').write_text(json.dumps(manifest, indent=2) + '\n', newline='\n')
+        (staging / 'metadata.json').write_bytes((json.dumps(manifest, indent=2) + '\n').encode('utf-8'))
         validated = load_session(staging)
         if not validated.samples:
             raise ValueError('no eligible recorded labels after conservative age/duplicate filtering')
