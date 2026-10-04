@@ -304,7 +304,7 @@ def import_recording(source, destination, *, expert_mode=None, exclude_sessions=
             'expert_mode': 'manual', 'exclusion_prefixes_checked': exclusions,
             'timing': TIMING, 'source_metadata': metadata,
         }
-        (staging / 'metadata.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        (staging / 'metadata.json').write_text(json.dumps(manifest, indent=2) + '\n', newline='\n')
         validated = load_session(staging)
         if not validated.samples:
             raise ValueError('no eligible recorded labels after conservative age/duplicate filtering')
@@ -333,7 +333,7 @@ def _aligned_session(path, source_meta, rows, alignment, fingerprint_files):
     group = 'record.py:' + source_meta['session']
     accepted, rejected = [], Counter()
     digest = hashlib.sha256()
-    for name in list(fingerprint_files) + [str(p.relative_to(path)) for p in _auxiliary_files(path)]:
+    for name in list(fingerprint_files) + [p.relative_to(path).as_posix() for p in _auxiliary_files(path)]:
         digest.update(name.encode())
         digest.update((path / name).read_bytes())
     previous_time, previous_image = None, None
@@ -372,7 +372,7 @@ def _aligned_session(path, source_meta, rows, alignment, fingerprint_files):
         'segments': source_meta['segments'], 'capture_config': source_meta['config'],
         'saved_size': source_meta['saved_size'], 'expert_basis': 'explicit --expert-mode manual',
         'buffering': profile,
-        'auxiliary_files_preserved': [str(p.relative_to(path)) for p in _auxiliary_files(path)],
+        'auxiliary_files_preserved': [p.relative_to(path).as_posix() for p in _auxiliary_files(path)],
         'additional_columns_not_model_inputs': list(rows[0])[len(COLUMNS):],
         'source_identity': 'schema-compatible; exact executed commit not recorded',
         'declared_producer_schema': source_meta.get('producer_schema'),

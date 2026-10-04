@@ -3,7 +3,7 @@
 Keep the notebook's archive-helpers cell in sync with this file. Only extract
 archives whose code/data you trust; containment does not establish provenance.
 """
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import json
 import shutil
 import stat
@@ -11,7 +11,7 @@ import tempfile
 import zipfile
 
 
-def extract_zip(archive, destination):
+def extract_zip(archive, destination, *, allow_legacy_backslashes=False):
     """Extract to a new directory; reject traversal, links, devices and collisions."""
     destination = Path(destination)
     if destination.exists():
@@ -19,12 +19,21 @@ def extract_zip(archive, destination):
     with zipfile.ZipFile(archive) as source:
         entries, seen = [], set()
         for member in source.infolist():
-            name = member.filename
+            # orig_filename retains archive spelling before ZipInfo's Windows
+            # separator normalization. Legacy game-PC ZIPs use backslashes.
+            raw_name = member.orig_filename
+            if '\\' in raw_name and not allow_legacy_backslashes:
+                raise ValueError(f'unsafe ZIP path: {raw_name!r}')
+            name = raw_name.replace('\\', '/')
             relative = PurePosixPath(name)
+            parts = name.rstrip('/').split('/')
             mode = member.external_attr >> 16
             kind = stat.S_IFMT(mode)
-            if (not name or '\\' in name or relative.is_absolute()
-                    or '..' in relative.parts or ':' in name or not relative.parts):
+            if (not name or relative.is_absolute() or ':' in name
+                    or any(part in ('', '.', '..') or part.endswith((' ', '.'))
+                           or PureWindowsPath(part).is_reserved()
+                           or any(ord(char) < 32 or char in '<>\"|?*' for char in part)
+                           for part in parts)):
                 raise ValueError(f'unsafe ZIP path: {name!r}')
             if kind not in (0, stat.S_IFREG, stat.S_IFDIR):
                 raise ValueError(f'ZIP links/special files are forbidden: {name!r}')
@@ -35,11 +44,11 @@ def extract_zip(archive, destination):
             if key in seen:
                 raise ValueError(f'duplicate ZIP path: {name!r}')
             seen.add(key)
-            entries.append((member, target))
+            entries.append((member, target, name.endswith('/')))
         destination.mkdir(parents=True, exist_ok=False)
         try:
-            for member, target in entries:
-                if member.is_dir():
+            for member, target, is_directory in entries:
+                if is_directory:
                     target.mkdir(parents=True, exist_ok=True)
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)

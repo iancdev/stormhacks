@@ -53,6 +53,7 @@ def test_import_preserves_original_labels_images_and_provenance(tmp_path):
     dest = tmp_path / 'imported'
     result = import_recording(source, dest, expert_mode='manual')
     assert result['accepted'] == 8
+    assert b'\r\n' not in (dest / 'metadata.json').read_bytes()
     assert result['split_group'] == 'record.py:drive-001'
     assert result['provenance']['timing']['image_age_bound_ns'] is None
     assert result['provenance']['timing']['time_resolution_ns'] == 100_000
