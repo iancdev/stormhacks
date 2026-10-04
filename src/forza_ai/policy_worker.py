@@ -4,7 +4,7 @@ import math
 import threading
 import time
 
-from forza_ai.contracts import ObservationUnavailable, SteeringCommand
+from forza_ai.contracts import ObservationUnavailable, SteeringCommand, DrivingPrediction
 
 
 class PolicyWorker:
@@ -81,13 +81,19 @@ class PolicyWorker:
             if observation is not None:
                 try:
                     prediction_started_ns = time.monotonic_ns()
-                    target = float(self.policy.predict(observation))
+                    prediction = self.policy.predict(observation)
+                    driving = isinstance(prediction, DrivingPrediction)
+                    if bool(getattr(self.policy, 'driving', False)) != driving:
+                        raise ValueError('policy output does not match its declared task')
+                    target = prediction.angle_deg if driving else float(prediction)
                     if not math.isfinite(target):
                         raise ValueError("policy returned a non-finite target")
                     generated = time.monotonic_ns()
                     command = SteeringCommand(target, generated, observation.timestamp_ns,
                                                generated + self.command_ttl_ns,
-                                               (generated - prediction_started_ns) / 1e6)
+                                               (generated - prediction_started_ns) / 1e6,
+                                               prediction.throttle if driving else None,
+                                               prediction.brake if driving else None)
                     with self._lock:
                         if generation == self._generation:
                             self._command = command

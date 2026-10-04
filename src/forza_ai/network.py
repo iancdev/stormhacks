@@ -25,7 +25,7 @@ import time
 import numpy as np
 from PIL import Image
 
-from forza_ai.contracts import ModelObservation, ObservationUnavailable
+from forza_ai.contracts import ModelObservation, ObservationUnavailable, DrivingPrediction
 
 
 VERSION = 1
@@ -156,10 +156,10 @@ def _receive_message(sock, key, deadline):
     return metadata, content[4 + metadata_length:]
 
 
-def _schema(metadata, kind, fields):
+def _schema(metadata, kind, fields, version=VERSION):
     if set(metadata) != {"version", "kind", *fields}:
         raise ProtocolError("unexpected message fields")
-    if type(metadata["version"]) is not int or metadata["version"] != VERSION or metadata["kind"] != kind:
+    if type(metadata["version"]) is not int or metadata["version"] != version or metadata["kind"] != kind:
         raise ProtocolError("unsupported protocol version or message kind")
 
 
@@ -232,7 +232,11 @@ class RemotePolicy:
     requires_camera = True
     name = "remote CNN steering policy"
 
-    def __init__(self, host, port=8765, key=None, timeout_s=0.2):
+    def __init__(self, host, port=8765, key=None, timeout_s=0.2, driving=False):
+        self.driving = bool(driving)
+        self.version = 2 if self.driving else VERSION
+        if self.driving:
+            self.name = "remote CNN steering and pedal policy"
         self.host = _ipv4(host)
         self.port = _port(port)
         self.timeout_s = _timeout(timeout_s)
@@ -255,7 +259,7 @@ class RemotePolicy:
         sock.settimeout(_remaining(deadline))
         sock.connect((self.host, self.port))
         metadata, payload = _receive_message(sock, self._key, deadline)
-        _schema(metadata, "hello", {"session"})
+        _schema(metadata, "hello", {"session"}, self.version)
         if payload:
             raise ProtocolError("unexpected hello payload")
         self._session = _session(metadata["session"])
@@ -291,12 +295,15 @@ class RemotePolicy:
                     sock = self._connect(deadline)
                 request_id = self._request_id
                 nonce = secrets.token_hex(16)  # also reject old server transcripts
-                request = {"version": VERSION, "kind": "predict", "session": self._session,
+                request = {"version": self.version, "kind": "predict", "session": self._session,
                            "request_id": request_id, "nonce": nonce, "frame_id": frame_id, "speed_mps": speed,
                            "width": width, "height": height}
                 _send_message(sock, self._key, request, png, deadline)
                 response, payload = _receive_message(sock, self._key, deadline)
-                _schema(response, "prediction", {"session", "request_id", "nonce", "frame_id", "angle_deg"})
+                fields = {"session", "request_id", "nonce", "frame_id", "angle_deg"}
+                if self.driving:
+                    fields |= {"throttle", "brake"}
+                _schema(response, "prediction", fields, self.version)
                 if (payload or _session(response["session"]) != self._session
                         or _identifier(response["request_id"], positive=True) != request_id
                         or _session(response["nonce"]) != nonce
@@ -308,7 +315,7 @@ class RemotePolicy:
                     if self._closed:
                         raise ObservationUnavailable("remote policy is closed")
                 self._request_id += 1
-                return angle
+                return DrivingPrediction(angle, response["throttle"], response["brake"]) if self.driving else angle
             except (OSError, TimeoutError) as error:
                 self._disconnect()
                 raise ObservationUnavailable("remote inference timed out or disconnected") from error

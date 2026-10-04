@@ -67,3 +67,20 @@ class SteeringModel(nn.Module):
 
     def forward(self, image: torch.Tensor, speed: torch.Tensor) -> torch.Tensor:
         return self.head(torch.cat((self.encoder(image), speed.reshape(-1, 1)), dim=1)).squeeze(1)
+
+
+class DrivingModel(SteeringModel):
+    """Shared encoder, steering and signed longitudinal heads.
+
+    Tanh longitudinal >0 is throttle, <0 is brake. Coast is zero; simultaneous
+    gas/brake is impossible. Training uses equal MSE weight for normalized angle and signed longitudinal action.
+    """
+    def __init__(self):
+        super().__init__()
+        self.head[-2] = nn.Linear(10, 2)
+
+    def forward(self, image, speed):
+        action = self.head(torch.cat((self.encoder(image), speed.reshape(-1, 1)), dim=1))
+        longitudinal = action[:, 1]
+        return torch.stack((action[:, 0], longitudinal.clamp(min=0),
+                            (-longitudinal).clamp(min=0)), dim=1)

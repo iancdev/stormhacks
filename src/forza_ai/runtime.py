@@ -41,7 +41,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         config=None, status_path=None, command_queue=None, camera=None, shadow=False,
         progress=False, arm_timeout=5.0, foreground_guard=None, arm_button=None,
         route_button=None, recorder=None, record_manual=False, takeover_settle_ms=100.0,
-        dashboard_port=None, run_report=None, direct_vjoy=False, direct_override_deg=20.0):
+        dashboard_port=None, run_report=None, direct_vjoy=False, direct_override_deg=20.0,
+        auto_pedals=False, pedal_override=0.05):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -91,6 +92,12 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             raise ValueError("shadow mode cannot engage assistance")
         if direct_vjoy and (not math.isfinite(direct_override_deg) or direct_override_deg <= 0):
             raise ValueError("direct_override_deg must be finite and positive")
+        if auto_pedals and not getattr(policy, 'driving', False):
+            raise ValueError('auto_pedals requires a v2 driving policy; steering-only models cannot control pedals')
+        if not math.isfinite(pedal_override) or not 0 < pedal_override < 1:
+            raise ValueError('pedal_override must be within (0,1)')
+        if auto_pedals and not hasattr(adapter, 'write_virtual_state_before'):
+            raise ValueError('auto_pedals requires a deadline-aware virtual adapter')
         model_mode = bool(getattr(policy, "requires_camera", False))
         if model_mode and (camera is None or receiver is None):
             raise ValueError("model policy requires a camera and telemetry receiver")
@@ -139,6 +146,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         pending_arm = assist
         active_arm_until = started + arm_timeout if assist else 0.0
         previous_buttons = None
+        previous_pedal_pressed = False
         route_active = False
         human_control = bool(record_manual)
         expert_after_ns = 0
@@ -201,6 +209,11 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if direct_vjoy and engaged_at_tick_start and abs(wheel.angle_deg) > direct_override_deg:
                 # No motor holds the wheel in this mode, so a deliberate turn is the human taking over.
                 takeover = explicit_takeover = True
+            pedal_pressed = auto_pedals and not shadow and max(wheel.throttle, wheel.brake) >= pedal_override
+            if pedal_pressed:
+                takeover = True
+                explicit_takeover = explicit_takeover or not previous_pedal_pressed
+            previous_pedal_pressed = pedal_pressed
             local_events = []
             if wheel_arm and not shadow:
                 local_events.append("arm")
@@ -249,7 +262,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             status = controller.step(wheel, command, now_ns, engage=engage_now, takeover=takeover)
             # Motor mode: always forward the measured inputs, never the model's target angle.
             # Direct-vJoy mode writes after validation below, where motor output would happen.
-            if not direct_vjoy:
+            if not direct_vjoy and not auto_pedals:
                 adapter.write_virtual_state(wheel)
             live_error = None
             if model_mode and status.mode == ControlMode.ASSIST:
@@ -283,9 +296,16 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 status = replace(status, mode=controller.mode, reason=output_error, torque=0.0)
             if direct_vjoy:
                 status = replace(status, torque=0.0)
-                steer = status.target_angle_deg if status.mode == ControlMode.ASSIST else wheel.angle_deg
-                adapter.write_virtual_state(replace(wheel, angle_deg=steer))
+            virtual = virtual_driving_state(wheel, status, command, direct_vjoy, auto_pedals)
             try:
+                if auto_pedals and status.mode == ControlMode.ASSIST:
+                    actuation_deadline = min(wheel.timestamp_ns + controller.config.max_wheel_age_ns,
+                                             command.valid_until_ns,
+                                             command.generated_time_ns + controller.config.max_command_age_ns,
+                                             command.observation_time_ns + controller.config.max_observation_age_ns)
+                    adapter.write_virtual_state_before(virtual, actuation_deadline)
+                elif direct_vjoy or auto_pedals:
+                    adapter.write_virtual_state(virtual)
                 if status.torque:
                     # Absolute host validity reaches the last native boundary;
                     # successful SDL preparation may still have consumed the budget.
@@ -298,6 +318,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                     adapter.set_torque(0.0)
             except ActuationExpired:
                 adapter.set_torque(0.0)
+                if auto_pedals:
+                    virtual = replace(wheel, throttle=0.0, brake=0.0)
+                    adapter.write_virtual_state(virtual)
                 worker.invalidate("actuation_deadline_expired")
                 pending_arm = False
                 human_control = False
@@ -331,7 +354,10 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                            timestamp_ns=after_io, torque=status.torque,
                            inference_ms=command.inference_ms if command else None,
                            prediction_id=command.generated_time_ns if command else None,
-                           shadow=shadow, allow_arm=not shadow,
+                           shadow=shadow, allow_arm=not shadow, auto_pedals=auto_pedals,
+                           predicted_throttle=command.throttle if command else None,
+                           predicted_brake=command.brake if command else None,
+                           output_throttle=virtual.throttle, output_brake=virtual.brake,
                            policy_name=getattr(policy, "name", "steering policy"),
                            expert_recording=expert if recorder is not None else False,
                            recording=recorder.stats if recorder is not None else None)
@@ -417,6 +443,23 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
     return summary
 
 
+def virtual_driving_state(wheel, status, command, direct_vjoy=False, auto_pedals=False):
+    steer = status.target_angle_deg if direct_vjoy and status.mode == ControlMode.ASSIST else wheel.angle_deg
+    throttle, brake = wheel.throttle, wheel.brake
+    if auto_pedals:
+        if status.mode == ControlMode.ASSIST:
+            from forza_ai.contracts import DrivingPrediction
+            if command is None:
+                raise ValueError('missing driving command')
+            prediction = DrivingPrediction(command.target_angle_deg, command.throttle, command.brake)
+            throttle, brake = prediction.throttle, prediction.brake
+        elif status.mode == ControlMode.FAULT or (status.mode == ControlMode.TAKEOVER and status.reason != 'manual_takeover'):
+            throttle = brake = 0.0
+        if brake > 0:
+            throttle = 0.0
+    return replace(wheel, angle_deg=steer, throttle=throttle, brake=brake)
+
+
 def _save_status(status_path, rows, summary, error_text, cleanup_errors=()):
     """Preserve diagnostic evidence even when a run fails; hardware is closed."""
     path = Path(status_path)
@@ -440,6 +483,10 @@ def main(argv=None):
     selection.add_argument("--model", type=Path, help="export directory containing model.pt and metadata.json")
     selection.add_argument("--sweep", action="store_true", help="stationary 0/right/0/left/0 angle sequence")
     selection.add_argument("--inference-host", help="desktop LAN address for remote image-plus-speed inference")
+    parser.add_argument("--auto-pedals", action="store_true",
+                        help="use a v2 driving model for throttle/brake; either physical pedal takes over")
+    parser.add_argument("--pedal-override", type=float, default=0.05,
+                        help="physical pedal fraction that takes over (default .05)")
     parser.add_argument("--inference-port", type=int, default=8765)
     parser.add_argument("--network-timeout", type=float, default=0.2, help="total request deadline in seconds")
     parser.add_argument("--target-angle", type=float, default=None, help="fixed target, or positive sweep amplitude; default 5")
@@ -483,6 +530,8 @@ def main(argv=None):
                         help="--direct-vjoy only: turning the wheel past this many degrees takes over")
     args = parser.parse_args(argv)
     live_mode = bool(args.model or args.inference_host)
+    if args.auto_pedals and not live_mode:
+        parser.error('--auto-pedals requires --model or --inference-host')
     needs_camera = live_mode or args.record_session is not None
     duration = args.duration if args.duration is not None else (0 if needs_camera else 12 if args.sweep else 5)
     if args.status_csv is not None and (duration == 0 or duration * args.control_hz > 100_000):
@@ -533,7 +582,7 @@ def main(argv=None):
             parser.error("--target-angle cannot be combined with a driving model")
         if args.inference_host:
             from forza_ai.network import RemotePolicy
-            policy = RemotePolicy(args.inference_host, port=args.inference_port, timeout_s=args.network_timeout)
+            policy = RemotePolicy(args.inference_host, port=args.inference_port, timeout_s=args.network_timeout, driving=args.auto_pedals)
         else:
             from forza_ai.policies.live import LiveModelPolicy
             policy = LiveModelPolicy(args.model)
@@ -584,7 +633,8 @@ def main(argv=None):
                      recorder=recorder, record_manual=args.record_manual,
                      takeover_settle_ms=args.takeover_settle_ms,
                      dashboard_port=args.dashboard_port, run_report=args.run_report,
-                     direct_vjoy=args.direct_vjoy, direct_override_deg=args.override_deg)
+                     direct_vjoy=args.direct_vjoy, direct_override_deg=args.override_deg,
+                     auto_pedals=args.auto_pedals, pedal_override=args.pedal_override)
     except KeyboardInterrupt:
         print("Stopped; hardware cleanup requested.")
         return 0

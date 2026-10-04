@@ -1,6 +1,7 @@
 """Authenticated LAN model server; start explicitly on the GPU/inference PC."""
 
 import argparse
+from forza_ai.contracts import DrivingPrediction
 import secrets
 import socket
 import threading
@@ -22,6 +23,8 @@ class InferenceServer:
 
     def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0):
         self.predictor = predictor
+        self.driving = getattr(predictor, "driving", False) is True
+        self.version = 2 if self.driving else VERSION
         self.host = _ipv4(host)
         self.port = _port(port, allow_zero=True)
         self.timeout_s = _timeout(timeout_s)
@@ -118,13 +121,13 @@ class InferenceServer:
 
     def _serve_client(self, client):
         session = secrets.token_hex(16)
-        _send_message(client, self._key, {"version": VERSION, "kind": "hello", "session": session},
+        _send_message(client, self._key, {"version": self.version, "kind": "hello", "session": session},
                       b"", time.monotonic() + self.timeout_s)
         next_request_id = 1
         while not self._stop.is_set():
             deadline = time.monotonic() + self.timeout_s
             request, payload = _receive_message(client, self._key, deadline)
-            _schema(request, "predict", {"session", "request_id", "nonce", "frame_id", "speed_mps", "width", "height"})
+            _schema(request, "predict", {"session", "request_id", "nonce", "frame_id", "speed_mps", "width", "height"}, self.version)
             if (_session(request["session"]) != session
                     or _identifier(request["request_id"], positive=True) != next_request_id):
                 raise ProtocolError("replayed or incorrectly ordered request")
@@ -136,10 +139,15 @@ class InferenceServer:
             if self._stop.is_set():
                 return
             next_request_id += 1
-            angle = _angle(self.predictor.predict(pixels, speed))
-            response = {"version": VERSION, "kind": "prediction", "session": session,
+            prediction = self.predictor.predict(pixels, speed)
+            if self.driving != isinstance(prediction, DrivingPrediction):
+                raise ProtocolError('predictor output does not match protocol version')
+            angle = _angle(prediction.angle_deg if self.driving else prediction)
+            response = {"version": self.version, "kind": "prediction", "session": session,
                         "request_id": request["request_id"], "nonce": nonce,
                         "frame_id": frame_id, "angle_deg": angle}
+            if self.driving:
+                response.update(throttle=prediction.throttle, brake=prediction.brake)
             _send_message(client, self._key, response, b"", deadline)
 
     def close(self):
@@ -191,9 +199,9 @@ def main(argv=None):
     _port(args.port)
     _timeout(args.timeout)
     if args.model is not None:
-        from forza_ai.policies.predictor import SteeringPredictor
+        from forza_ai.policies.predictor import load_predictor
 
-        predictor = SteeringPredictor(args.model)
+        predictor = load_predictor(args.model)
     else:
         predictor = _FixedPredictor(args.test_target)
     server = InferenceServer(predictor, args.bind, args.port, key, args.timeout)

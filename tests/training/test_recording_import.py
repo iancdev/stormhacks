@@ -64,6 +64,7 @@ def test_import_preserves_original_labels_images_and_provenance(tmp_path):
     assert not (dest / 'wheel.csv').exists()  # Never fabricate source sample times.
     samples = load_session(dest).samples
     assert [s.angle_deg for s in samples] == list(range(0, 80, 10))
+    assert all(s.throttle == 0.4 and s.brake == 0.0 for s in samples)
     assert samples[1].capture_time_ns == 33_300_000  # Quantized retrieval, not capture.
     with pytest.raises(ValueError, match='zero label offset'):
         load_session(dest, Alignment(label_offset_ns=1))
