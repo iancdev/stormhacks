@@ -324,3 +324,12 @@ New recordings may declare `producer_schema=record_py_buffered_20_v1` and
 format and the hash must be 64 lowercase hexadecimal characters. Both fields
 remain optional for old recordings. Imports preserve them as **declared** producer
 identity; syntax validation alone does not prove the executing source's identity.
+
+Archive paths are checked using the raw ZIP member name before host-specific
+`ZipInfo` normalization. Colab extraction rejects literal backslashes by default.
+For a known legacy Windows ZIP, the standalone helper can explicitly use
+`extract_zip(..., allow_legacy_backslashes=True)`; normalization still rejects
+traversal, absolute/drive paths, Windows reserved names, and mixed-separator
+collisions. Import provenance and auxiliary fingerprint paths use `/` on every
+host; newly generated import manifests use LF line endings. Original source
+files are copied unchanged.
