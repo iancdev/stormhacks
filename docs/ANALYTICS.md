@@ -116,6 +116,31 @@ pasted into the Tiger Console SQL editor or any Postgres client.
 - **Model comparison:** load each model's run under its own session name; the
   Runs table then reads as a leaderboard.
 
+## Insights: why did the human take over?
+
+```sh
+forza-analytics insights                    # all AI runs
+forza-analytics insights --session ai-v1    # one run
+```
+
+Six hypothesis queries (`src/forza_ai/analytics/insights.py`), each mapped to
+a knob that already exists in `run-ai.ps1` or training:
+
+| | Question | Knob |
+| --- | --- | --- |
+| H1 | During takeovers, how much more does the human steer than the AI asked? | `--steering-gain` (the ratio is the candidate value) |
+| H2 | Do takeovers and disagreement rise above some speed? | `--max-speed-kmh`, `--corner-speed-kmh`, `--brake-gain` |
+| H3 | Are takeovers concentrated in left or right corners? | DAgger-record that side (`run-ai -Record`), retrain |
+| H4 | Does the AI react late? (prediction vs human angle shifted in time) | `--label-offset-ms`, target slew |
+| H5 | Which steer/speed cells have many takeovers but little human training data? | record more laps there |
+| H6 | What triggered each takeover (button, grab, pedal)? | controller limits vs model errors |
+
+H1, H2 and H4 need `predicted_deg`, so the run must have been recorded with
+`-Record` (predictions.csv) or logged with `--status-csv`. H3 and H6 read
+`control_events`; H5 compares AI runs with `recorder` human laps. The intended
+workflow: load run v1, read the clearest signal, turn that knob, re-run the
+same route as v2, and compare the two rows in the Runs table.
+
 Tests in `tests/analytics` cover CSV/JSON conversion, the causal joins, and
 schema parsing with fakes and need no database. The live path was exercised
 against a Tiger Cloud free service with a synthetic `record.py` lap, a stream-v1

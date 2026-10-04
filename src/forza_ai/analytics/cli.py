@@ -2,7 +2,7 @@
 import argparse
 from datetime import datetime
 
-from forza_ai.analytics import db, load, report
+from forza_ai.analytics import db, insights, load, report
 
 
 def _end_time(value):
@@ -41,6 +41,8 @@ def main(argv=None):
     summary = commands.add_parser("report", help="print runs, per-session and per-minute metrics")
     summary.add_argument("--session")
     summary.add_argument("--events", action="store_true", help="also list control hand-offs and takeovers")
+    hypotheses = commands.add_parser("insights", help="run the H1-H6 hypothesis queries on AI runs")
+    hypotheses.add_argument("--session")
     args = parser.parse_args(argv)
 
     with db.connect(args.url) as conn:
@@ -78,6 +80,10 @@ def main(argv=None):
                       + report.format_table(*report.fetch(conn, report.CONTROL_EVENTS, session=args.session)))
                 print("\nTakeover onsets in status-CSV runs\n"
                       + report.format_table(*report.fetch(conn, report.TAKEOVER_EVENTS, session=args.session)))
+        elif args.command == "insights":
+            for index, (title, hint, sql) in enumerate(insights.HYPOTHESES):
+                table = report.format_table(*report.fetch(conn, sql, session=args.session))
+                print(("\n" if index else "") + f"{title}\n  {hint}\n" + table)
 
 
 if __name__ == "__main__":
