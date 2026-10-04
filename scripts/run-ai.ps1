@@ -62,6 +62,9 @@ param(
     # DAgger: record the session (frames, wheel, telemetry, AI predictions). Only your takeover
     # driving becomes training labels; the first TakeoverSettleMs after each takeover is left out.
     [switch]$Record,
+    # Diagnosis: turn off wheel-grab takeover detection (Mirror) so every disengagement is a system
+    # cause (network, game, fault). The takeover button still works as an emergency stop.
+    [switch]$NoGrab,
     # Mirror: grabbing the wheel takes over once it is this far from the AI's angle and still being
     # pulled away for 0.08 s (the old 30 deg / 0.3 s rule took 1-1.5 s against the motor). 0 = old rule only.
     [ValidateRange(0, 90)]
@@ -108,7 +111,11 @@ if ($Record) {
     $runtimeArgs += @("--record-session", $session, "--takeover-settle-ms", $TakeoverSettleMs)
 }
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
-if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel", "--mirror-fast-grab-deg", $FastGrabDeg) }
+if ($Mode -eq "Mirror") {
+    $runtimeArgs += @("--direct-vjoy", "--mirror-wheel")
+    if ($NoGrab) { $runtimeArgs += @("--mirror-fast-grab-deg", 0, "--mirror-grab-deg", 900) }   # grabs never trigger
+    else { $runtimeArgs += @("--mirror-fast-grab-deg", $FastGrabDeg) }
+}
 # --motor-update-ms/--torque-step: the TMX queues commands sent every 10 ms and falls further behind.
 if ($Mode -ne "Vjoy") { $runtimeArgs += @("--kp", $Kp, "--kd", $Kd, "--friction", $Friction,
                                           "--motor-update-ms", 30, "--torque-step", 0.02) }
@@ -124,6 +131,7 @@ if ($HumanPedals) { Write-Host "Pedals: YOU drive gas and brake; the AI steers o
 else { Write-Host "AI pedals: throttle cap $ThrottleCap, ramp $ThrottleRate/s, speed cap $(if ($MaxSpeedKmh) { "$MaxSpeedKmh km/h" } else { 'off' }), brake x$BrakeGain, corner limit $(if ($CornerSpeedKmh) { "$CornerSpeedKmh km/h past $CornerAngleDeg deg" } else { 'off' })" }
 Write-Host "Dashboard: http://${DashboardHost}:$DashboardPort  (from the laptop: http://169.254.218.1:$DashboardPort)"
 Write-Host "Log: $status"
+if ($NoGrab) { Write-Warning "Grab-to-take-over is OFF: only button $TakeoverButton (or Ctrl+C) takes control back." }
 if ($Record) { Write-Host "RECORDING (DAgger) to $session - take over with button $TakeoverButton, correct, re-arm with $ArmButton" }
 Push-Location $repo
 try {
