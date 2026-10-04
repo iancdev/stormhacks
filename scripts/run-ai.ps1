@@ -6,6 +6,10 @@ param(
     [ValidateSet("Mirror", "Motor", "Vjoy")]
     [string]$Mode = "Mirror",
     [string]$InferenceHost = "169.254.72.151",
+    # Seconds to wait for each prediction (runtime default 0.2). Over Wi-Fi, 0.3 rides out short
+    # spikes; predictions older than the controller's 250 ms limit are still rejected.
+    [ValidateRange(0.05, 1.0)]
+    [double]$NetworkTimeout = 0.2,
     [ValidateRange(0, 127)]
     [int]$ArmButton = 10,
     [ValidateRange(0, 127)]
@@ -84,7 +88,7 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $status = Join-Path $runs ("ai-" + $Mode.ToLower() + "-" + $stamp + ".csv")
 
 $runtimeArgs = @("-m", "forza_ai.runtime", "--backend", "windows",
-    "--inference-host", $InferenceHost, "--capture-config", (Join-Path $repo "config/capture.json"),
+    "--inference-host", $InferenceHost, "--network-timeout", $NetworkTimeout, "--capture-config", (Join-Path $repo "config/capture.json"),
     "--assist", "--arm-button", $ArmButton, "--takeover-button", $TakeoverButton,
     "--torque-limit", $TorqueLimit, "--duration", $Duration, "--status-csv", $status,
     "--steer-gain", $SteerGain, "--target-rate", $TargetRate, "--auto-rearm-s", $AutoRearmS,
