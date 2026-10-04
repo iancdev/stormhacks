@@ -162,6 +162,10 @@ def test_loopback_server_failure_and_fast_reconnect_preserve_event():
     worker.publish(ModelObservation(frame, vehicle))
     worker.start()
     try:
+        wait_for(lambda: worker.latest() is not None)
+        worker.publish(ModelObservation(CapturedFrame(2, time.monotonic_ns(), frame.rgb), vehicle))
+        wait_for(lambda: worker.failure_state()[0] == 1 and worker.latest() is not None)
+        worker.publish(ModelObservation(CapturedFrame(3, time.monotonic_ns(), frame.rgb), vehicle))
         assert entered.wait(2), "worker did not reconnect and publish its recovery"
         assert worker.latest().target_angle_deg == 9
         assert worker.unavailable_reason is None
@@ -171,3 +175,66 @@ def test_loopback_server_failure_and_fast_reconnect_preserve_event():
         release.set()
         worker.close()
         server.close()
+
+
+def camera_observation(number):
+    now = time.monotonic_ns()
+    return ModelObservation(CapturedFrame(number, now, np.zeros((66, 200, 3), dtype=np.uint8)),
+                            VehicleState(now, 10, True, 1, 1000, 0))
+
+
+def test_camera_success_waits_for_new_frame_without_refreshing_command():
+    calls = []
+    class Policy:
+        def predict(self, sample):
+            calls.append(sample.frame.frame_id)
+            return 3
+    worker = PolicyWorker(Policy(), hz=1000)
+    sample = camera_observation(1)
+    worker.publish(sample)
+    worker.start()
+    try:
+        command = wait_for(worker.latest)
+        for _ in range(20):
+            worker.publish(ModelObservation(sample.frame, sample.vehicle))
+        time.sleep(.03)
+        assert calls == [1]
+        assert worker.latest() is command
+        assert command.observation_time_ns == sample.timestamp_ns
+        assert worker.stats()["duplicate_publications"] == 20
+        assert worker.stats()["model_calls"] == 1
+        worker.invalidate("takeover")
+        worker.publish(sample)
+        wait_for(lambda: len(calls) == 2)
+    finally:
+        worker.close()
+
+
+def test_slow_model_skips_intermediate_frames_and_discards_invalidated_result():
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    class Policy:
+        def predict(self, sample):
+            calls.append(sample.frame.frame_id)
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(2)
+            return sample.frame.frame_id
+        def close(self):
+            release.set()
+    worker = PolicyWorker(Policy(), hz=1000)
+    worker.publish(camera_observation(1))
+    worker.start()
+    try:
+        assert entered.wait(2)
+        worker.publish(camera_observation(2))
+        worker.publish(camera_observation(3))
+        assert worker.stats()["superseded_frames"] == 1
+        worker.invalidate("paused")
+        worker.publish(camera_observation(4))
+        release.set()
+        wait_for(lambda: worker.latest() is not None)
+        assert calls == [1, 4]
+        assert worker.latest().target_angle_deg == 4
+    finally:
+        worker.close()

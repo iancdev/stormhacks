@@ -70,3 +70,20 @@ def test_motor_mode_still_forwards_measured_wheel_only():
     assert summary["max_abs_torque"] > 0.0
     assert all(abs(w - 5.0) > 1e-9 or w == adapter.angle for w in adapter.writes[:1])
     assert max(adapter.writes) < 5.0 + 1.0            # vJoy shows the physical wheel, not the target
+
+
+def test_steering_only_direct_output_uses_native_deadline_and_restores_human_on_expiry():
+    from forza_ai.contracts import ActuationExpired
+    class ExpiringAdapter(RecordingAdapter):
+        deadlines = 0
+        def write_virtual_state_before(self, state, deadline_ns):
+            self.deadlines += 1
+            assert deadline_ns > 0
+            raise ActuationExpired("native preparation stalled")
+    adapter = ExpiringAdapter()
+    result = run(adapter, FixedAnglePolicy(5), duration=.15, assist=True, direct_vjoy=True)
+    assert adapter.deadlines == 1
+    assert result["mode"] == ControlMode.FAULT.value
+    assert result["reason"] == "actuation_deadline_expired"
+    assert adapter.writes[-1] == adapter.angle == 0
+    assert all(t == 0 for t in adapter.torques)

@@ -174,3 +174,19 @@ or USB hardware timestamps. Keep the full original recording directory: the
 legacy importer continues to use its conservative aligned labels, not the new
 timing sidecar. The integrated recorder above supplies the stream-v1 route for
 new correction datasets.
+
+### Latest-frame inference scheduling
+
+Camera policies infer once per successfully processed `(frame_id, capture_timestamp)`.
+The policy worker waits for new frames, caps starts at `--policy-hz`, and retains only
+one latest pending observation while a prediction runs. Slower inference therefore
+reduces the actual inference cadence without accumulating old frames. Capture and
+the 100 Hz local control loop remain independent. Recoverable failures retry at the
+configured cap; successful predictions never refresh an old frame's timestamp or
+command deadline. Invalidation still discards in-flight results.
+
+Run reports and dashboard state include `policy_worker`: unique input frame rate,
+model-call rate (including retries), duplicate publication and superseded-frame
+counts. These rates cover the worker lifetime, whereas `rates` remains a rolling
+window of capture, successful prediction, and control events. This distinguishes
+new visual information from repeated model calls. No stale-input budget is extended.

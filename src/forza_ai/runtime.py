@@ -96,8 +96,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             raise ValueError('auto_pedals requires a v2 driving policy; steering-only models cannot control pedals')
         if not math.isfinite(pedal_override) or not 0 < pedal_override < 1:
             raise ValueError('pedal_override must be within (0,1)')
-        if auto_pedals and not hasattr(adapter, 'write_virtual_state_before'):
-            raise ValueError('auto_pedals requires a deadline-aware virtual adapter')
+        if (direct_vjoy or auto_pedals) and not hasattr(adapter, 'write_virtual_state_before'):
+            raise ValueError('AI virtual output requires a deadline-aware virtual adapter')
         model_mode = bool(getattr(policy, "requires_camera", False))
         if model_mode and (camera is None or receiver is None):
             raise ValueError("model policy requires a camera and telemetry receiver")
@@ -302,7 +302,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 status = replace(status, torque=0.0)
             virtual = virtual_driving_state(wheel, status, command, direct_vjoy, auto_pedals)
             try:
-                if auto_pedals and status.mode == ControlMode.ASSIST:
+                if (direct_vjoy or auto_pedals) and status.mode == ControlMode.ASSIST:
                     actuation_deadline = min(wheel.timestamp_ns + controller.config.max_wheel_age_ns,
                                              command.valid_until_ns,
                                              command.generated_time_ns + controller.config.max_command_age_ns,
@@ -322,8 +322,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                     adapter.set_torque(0.0)
             except ActuationExpired:
                 adapter.set_torque(0.0)
-                if auto_pedals:
-                    virtual = replace(wheel, throttle=0.0, brake=0.0)
+                if direct_vjoy or auto_pedals:
+                    virtual = replace(wheel, throttle=0.0, brake=0.0) if auto_pedals else wheel
                     adapter.write_virtual_state(virtual)
                 worker.invalidate("actuation_deadline_expired")
                 pending_arm = False
@@ -370,6 +370,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                               has_camera=camera is not None)
             if dashboard is not None and after_io >= next_dashboard_ns:
                 dashboard_metrics = metrics.summary()
+                summary["policy_worker"] = worker.stats() if hasattr(worker, "stats") else None
                 dashboard.publish(dict(summary, route_active=route_active,
                                        human_interventions=dashboard_metrics["human_interventions"],
                                        metrics=dashboard_metrics, rates=live_rates.summary(),
@@ -424,6 +425,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 cleanup_errors.append(f"recording: {type(error).__name__}: {error}")
             summary["recording"] = recorder.stats
         summary["metrics"] = metrics.summary()
+        summary["policy_worker"] = worker.stats() if hasattr(worker, "stats") else None
         report_error = error_text or ("Cleanup failed: " + "; ".join(cleanup_errors) if cleanup_errors else None)
         if status_path is not None:
             try:
