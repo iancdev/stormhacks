@@ -7,12 +7,13 @@ import os
 from pathlib import Path
 import tempfile
 import warnings
+import sys
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from forza_ai.data.dataset import SteeringDataset
+from forza_ai.data.dataset import SteeringDataset, estimate_cache_bytes
 from forza_ai.data.cache import PreprocessingCache
 from forza_ai.data.sessions import Alignment, load_sessions, split_sessions
 from forza_ai.policies.steering_model import Preprocessing, SteeringModel
@@ -28,7 +29,7 @@ class TrainConfig:
     validation_fraction: float = 0.25
     seed: int = 7
     workers: int = 0
-    cache_mib: int = 256
+    cache_mib: int = 512
 
     def __post_init__(self):
         if type(self.cache_mib) is not int or self.cache_mib < 0:
@@ -104,6 +105,43 @@ def _metrics(predictions, targets, mean):
             'train_mean_baseline': errors(np.full_like(y, mean))}
 
 
+def _admit_cache(sessions, preprocessing, alignment, cache_mib, workers=0):
+    budget = cache_mib * 1024 * 1024
+    required = None
+    reason = 'disabled_by_request'
+    if budget and workers:
+        reason = 'loader_workers'
+        warnings.warn('preprocessing cache disabled with workers > 0 to avoid worker copies', RuntimeWarning)
+    elif budget:
+        try:
+            required = estimate_cache_bytes(sessions, preprocessing, alignment)
+        except (MemoryError, RuntimeError) as error:
+            if not PreprocessingCache._is_oom(error):
+                raise
+            reason = 'estimate_allocation_failed'
+        else:
+            if type(required) is not int or required < 0:
+                reason = 'unknown_working_set'
+            elif required > budget:
+                reason = 'working_set_exceeds_budget'
+            else:
+                reason = 'fits_budget'
+    enabled = reason == 'fits_budget'
+    cache = None
+    if enabled:
+        try:
+            cache = PreprocessingCache(budget)
+        except (MemoryError, RuntimeError) as error:
+            if not PreprocessingCache._is_oom(error):
+                raise
+            enabled, reason = False, 'cache_initialization_failed'
+    print(json.dumps({'preprocessing_cache': {
+        'enabled': enabled, 'reason': reason, 'budget_bytes': budget,
+        'required_bytes': required,
+    }}), file=sys.stderr)
+    return cache
+
+
 def evaluate_model(model, sessions, preprocessing, mean, device, batch_size=64, cache=None, alignment=None):
     model.eval()
     all_predictions, all_targets, by_session = [], [], {}
@@ -175,11 +213,8 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
         atomic_save(best_snapshot, output / 'best.pt')
     # Never pickle/fork cache contents into per-worker copies. One budget serves
     # both training and validation when loading in the parent process.
-    cache = None
-    if config.cache_mib and config.workers:
-        warnings.warn('preprocessing cache disabled with workers > 0 to avoid worker copies', RuntimeWarning)
-    elif config.cache_mib:
-        cache = PreprocessingCache(config.cache_mib * 1024 * 1024)
+    cache = _admit_cache(train_sessions + val_sessions, preprocessing, alignment,
+                         config.cache_mib, config.workers)
     dataset = SteeringDataset(train_sessions, preprocessing, cache, alignment)
     mean = float(np.mean([s.angle_deg for session in train_sessions for s in session.samples]))
     for epoch in range(start, epochs):
@@ -252,7 +287,8 @@ def evaluate(checkpoint, data, device='cpu', unseen=False, cache_mib=0):
     model.load_state_dict(saved['model_state'])
     return evaluate_model(model, sessions, Preprocessing(**saved['preprocessing']),
                           saved['train_mean_angle_deg'], device,
-                          cache=PreprocessingCache(cache_mib * 1024 * 1024) if cache_mib else None,
+                          cache=_admit_cache(sessions, Preprocessing(**saved['preprocessing']),
+                                             Alignment(**saved['alignment']), cache_mib),
                           alignment=Alignment(**saved['alignment']))
 
 

@@ -209,3 +209,83 @@ def test_oom_fallback_without_top_level_torch_alias(monkeypatch, operation, kind
     assert cache.resident_bytes == cache.max_bytes == 0
     assert not cache._entries
     assert not cache._is_oom(RuntimeError('unrelated error'))
+
+
+def test_estimate_matches_actual_tensor_bytes_and_key_uniqueness(sessions):
+    from forza_ai.data.dataset import estimate_cache_bytes
+    config = Preprocessing()
+    data = SteeringDataset(sessions, config)
+    actual = sum(t.numel() * t.element_size() for i in range(len(data)) for t in data[i])
+    assert estimate_cache_bytes(sessions, config, Alignment()) == actual
+    assert estimate_cache_bytes(sessions + [sessions[0]], config, Alignment()) == actual
+    assert actual == len(data) * 158408
+
+
+def test_admission_includes_validation_and_reports_budget(sessions, capsys):
+    training, validation = split_sessions(sessions, .25, 7)
+    config, alignment = Preprocessing(), Alignment()
+    # Training alone fits 3 MiB; all 24 accepted samples do not.
+    assert engine._admit_cache(training, config, alignment, 3) is not None
+    assert engine._admit_cache(training + validation, config, alignment, 3) is None
+    report = __import__('json').loads(capsys.readouterr().err.splitlines()[-1])['preprocessing_cache']
+    assert report == {'enabled': False, 'reason': 'working_set_exceeds_budget',
+                      'budget_bytes': 3 * 1024**2, 'required_bytes': 24 * 158408}
+    assert engine._admit_cache(training + validation, config, alignment, 4) is not None
+    assert engine._admit_cache(training + validation, config, alignment, 0) is None
+
+
+@pytest.mark.parametrize('result', [None, MemoryError('budget estimation allocation failed')])
+def test_unknown_or_failed_estimate_disables_cache(sessions, monkeypatch, result, capsys):
+    def estimate(*args):
+        if isinstance(result, Exception): raise result
+        return result
+    monkeypatch.setattr(engine, 'estimate_cache_bytes', estimate)
+    assert engine._admit_cache(sessions, Preprocessing(), Alignment(), 4) is None
+    report = __import__('json').loads(capsys.readouterr().err)['preprocessing_cache']
+    assert report['reason'] in {'unknown_working_set', 'estimate_allocation_failed'}
+    assert not report['enabled']
+
+
+def test_over_budget_cli_never_creates_or_churns_cache(tmp_path, monkeypatch, capsys):
+    from forza_ai.training.cli import main
+    torch.set_num_threads(1)
+    data = generate(tmp_path / 'data', sessions=3, frames=8)
+    def forbidden(*args): raise AssertionError('over-budget cache allocated')
+    monkeypatch.setattr(engine, 'PreprocessingCache', forbidden)
+    main(['train', str(data), str(tmp_path / 'run'), '--epochs', '2', '--device', 'cpu', '--cache-mib', '1'])
+    report = __import__('json').loads(capsys.readouterr().err)['preprocessing_cache']
+    assert report['reason'] == 'working_set_exceeds_budget'
+    assert report['required_bytes'] > report['budget_bytes']
+
+
+def test_cache_initialization_failure_disables_once(sessions, monkeypatch, capsys):
+    class FailingCache(PreprocessingCache):
+        def __init__(self, *args):
+            raise MemoryError('cache metadata')
+    monkeypatch.setattr(engine, 'PreprocessingCache', FailingCache)
+    assert engine._admit_cache(sessions, Preprocessing(), Alignment(), 4) is None
+    assert 'cache_initialization_failed' in capsys.readouterr().err
+
+
+def test_default_512mib_admits_1988_frames_but_rejects_larger(sessions, capsys):
+    from forza_ai.data.dataset import estimate_cache_bytes
+    config = engine.TrainConfig()
+    assert config.cache_mib == 512
+    sample = sessions[0].samples[0]
+    def sized(count):
+        return [replace(sessions[0], samples=[replace(sample, capture_time_ns=i) for i in range(count)])]
+    real_sized = sized(1988)  # Size-only unit fixture; no train/validation claim.
+    assert estimate_cache_bytes(real_sized, Preprocessing()) == 314915104
+    cache = engine._admit_cache(real_sized, Preprocessing(), Alignment(), config.cache_mib)
+    assert cache is not None and cache.max_bytes == 512 * 1024**2
+    assert engine._admit_cache(sized(4000), Preprocessing(), Alignment(), config.cache_mib) is None
+    assert engine._admit_cache(real_sized, Preprocessing(), Alignment(), 256) is None
+
+
+def test_cli_defaults_to_512_and_preserves_explicit_zero(tmp_path, monkeypatch):
+    from forza_ai.training.cli import main
+    configs = []
+    monkeypatch.setattr(engine, 'train', lambda data, output, epochs, config, *args, **kwargs: configs.append(config))
+    main(['train', str(tmp_path / 'data'), str(tmp_path / 'out')])
+    main(['train', str(tmp_path / 'data'), str(tmp_path / 'out'), '--cache-mib', '0'])
+    assert [c.cache_mib for c in configs] == [512, 0]

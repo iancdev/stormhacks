@@ -43,7 +43,7 @@ def main(argv=None):
     train.add_argument('--validation-fraction', type=float, default=.25)
     train.add_argument('--seed', type=int, default=7)
     train.add_argument('--workers', type=int, default=0)
-    train.add_argument('--cache-mib', type=int, default=256, help='shared CPU preprocessing tensor budget; 0 disables; disabled with workers > 0')
+    train.add_argument('--cache-mib', type=int, default=512, help='CPU tensor budget in MiB (default 512); full train+validation set must fit; 0 disables; disabled with workers > 0')
     train.add_argument('--device', default='auto')
     _alignment(train)
     resume = subs.add_parser('resume', help='continue to a total epoch count using saved configuration')

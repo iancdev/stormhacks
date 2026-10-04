@@ -10,6 +10,37 @@ from torch.utils.data import Dataset
 from forza_ai.policies.steering_model import Preprocessing, preprocess_rgb
 
 
+SAMPLE_DTYPE = torch.float32
+
+
+def cache_keys_for_sessions(sessions, preprocessing, alignment=None):
+    keys = []
+    for session in sessions:
+        # Freshly validated content plus exact accepted rows prevent stale
+        # reuse after filtering/alignment/preprocessing or label changes.
+        identity = {
+            'path': str(session.path.resolve()), 'fingerprint': session.fingerprint,
+            'session': session.session_id, 'group': session.group,
+            'preprocessing': preprocessing.to_dict(),
+            'alignment': asdict(alignment) if alignment is not None else None,
+            'accepted': [(str(s.image_path), s.capture_time_ns, s.angle_deg,
+                          s.speed_mps, s.control_mode) for s in session.samples],
+        }
+        namespace = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        keys.extend((namespace, i) for i in range(len(session.samples)))
+    return keys
+
+
+def estimate_cache_bytes(sessions, preprocessing, alignment=None):
+    # Same namespace/index keys as the dataset; duplicate references count once.
+    # The supported preprocessing contract is fixed RGB CHW plus two scalars.
+    if (preprocessing.width, preprocessing.height) != (200, 66):
+        return None
+    count = len(set(cache_keys_for_sessions(sessions, preprocessing, alignment)))
+    item_bytes = torch.empty((), dtype=SAMPLE_DTYPE, device='cpu').element_size()
+    return count * (3 * preprocessing.height * preprocessing.width + 2) * item_bytes
+
+
 class SteeringDataset(Dataset):
     def __init__(self, sessions, preprocessing: Preprocessing, cache=None, alignment=None):
         sessions = list(sessions)
@@ -18,19 +49,7 @@ class SteeringDataset(Dataset):
         self.cache = cache
         self.cache_keys = []
         if cache is not None:
-            for session in sessions:
-                # Freshly validated content plus exact accepted rows prevent stale
-                # reuse after filtering/alignment/preprocessing or label changes.
-                identity = {
-                    'path': str(session.path.resolve()), 'fingerprint': session.fingerprint,
-                    'session': session.session_id, 'group': session.group,
-                    'preprocessing': preprocessing.to_dict(),
-                    'alignment': asdict(alignment) if alignment is not None else None,
-                    'accepted': [(str(s.image_path), s.capture_time_ns, s.angle_deg,
-                                  s.speed_mps, s.control_mode) for s in session.samples],
-                }
-                namespace = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-                self.cache_keys.extend((namespace, i) for i in range(len(session.samples)))
+            self.cache_keys = cache_keys_for_sessions(sessions, preprocessing, alignment)
 
     def __len__(self):
         return len(self.samples)
@@ -45,8 +64,8 @@ class SteeringDataset(Dataset):
             pixels = np.asarray(image.convert('RGB'))
         config = self.preprocessing
         result = (preprocess_rgb(pixels, config),
-                torch.tensor(sample.speed_mps / config.speed_scale_mps, dtype=torch.float32),
-                torch.tensor(sample.angle_deg / config.angle_scale_deg, dtype=torch.float32))
+                torch.tensor(sample.speed_mps / config.speed_scale_mps, dtype=SAMPLE_DTYPE),
+                torch.tensor(sample.angle_deg / config.angle_scale_deg, dtype=SAMPLE_DTYPE))
         if self.cache is not None:
             self.cache.put(self.cache_keys[index], result)
         return result

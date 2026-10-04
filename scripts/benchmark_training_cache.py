@@ -12,12 +12,13 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--frames', type=int, default=128)
+    p.add_argument('--cache-mib', type=int, default=512)
     p.add_argument('--epochs', type=int, default=3)
     p.add_argument('--repeats', type=int, default=2)
     p.add_argument('--device', choices=['cpu', 'cuda'], default='cpu')
     args = p.parse_args()
-    if not (4 <= args.frames <= 256 and 1 <= args.epochs <= 5 and 1 <= args.repeats <= 3):
-        p.error('bounded fixture: frames 4..256, epochs 1..5, repeats 1..3')
+    if not (4 <= args.frames <= 768 and 1 <= args.epochs <= 5 and 1 <= args.repeats <= 3 and 1 <= args.cache_mib <= 2048):
+        p.error('bounded fixture: frames 4..768, epochs 1..5, repeats 1..3, cache MiB 1..2048')
     if args.output.exists(): p.error('output must be new')
     import torch
     from forza_ai.data.synthetic import generate
@@ -35,9 +36,10 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             train(data, root / 'warmup', epochs=1, config=TrainConfig(cache_mib=0), device=args.device)
         for repeat in range(args.repeats):
-            for budget in ([0, 256] if repeat % 2 == 0 else [256, 0]):
+            for budget in ([0, args.cache_mib] if repeat % 2 == 0 else [args.cache_mib, 0]):
                 synchronize(); start = time.perf_counter()
-                with contextlib.redirect_stdout(io.StringIO()):
+                diagnostic = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(diagnostic):
                     saved = train(data, root / f'run-{repeat}-{budget}', epochs=args.epochs,
                                   config=TrainConfig(cache_mib=budget), device=args.device)
                 synchronize(); elapsed = time.perf_counter() - start
@@ -49,6 +51,7 @@ def main():
                 records.append({'repeat': repeat, 'cache_mib': budget, 'total_s': elapsed,
                                 'train_samples_per_epoch': args.frames * 2,
                                 'validation_samples_per_epoch': args.frames,
+                                'cache_admission': [json.loads(line)['preprocessing_cache'] for line in diagnostic.getvalue().splitlines() if line.startswith('{"preprocessing_cache":')],
                                 'exact_history_and_weights_parity': True})
     result = {'synthetic_only': True, 'device': args.device, 'torch': torch.__version__,
               'threads': 1, 'batch_size': 32, 'seed': 7, 'epochs': args.epochs,

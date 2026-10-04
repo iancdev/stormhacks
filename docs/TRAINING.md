@@ -339,11 +339,17 @@ files are copied unchanged.
 Training now shares a run-local CPU cache between training and validation. The
 cache stores the exact existing float32 image, speed and label tensors; batch
 size (32), model, precision, loss, epoch-derived shuffle and session splits are
-unchanged. `--cache-mib 256` is the default tensor-payload budget;
-`--cache-mib 0` restores uncached loading. Least-recently-used entries are evicted
-when the shared budget fills. If one sample exceeds the budget it is decoded
-normally without being retained. Smaller-than-dataset caches may have limited
-benefit due to eviction; choose a budget that fits your RAM and measurements.
+unchanged. `--cache-mib 512` is the default tensor-payload budget;
+`--cache-mib 0` restores uncached loading. Before allocating the cache, the trainer
+estimates the complete accepted training **and validation** working set using the
+same unique keys and tensor dimensions as the dataset. Caching is enabled only
+when the entire working set fits. Otherwise normal uncached loading is selected,
+avoiding repeated eviction/copy overhead. Explicit nonzero budgets follow the same
+rule; there is no partial-cache override. An unknown size or allocation failure
+during estimation also disables caching. A JSON diagnostic on stderr reports
+`enabled`, `reason`, `budget_bytes` and `required_bytes` (null if unknown).
+Choose a budget that fits available RAM, including non-cache overhead. The lower
+level cache retains defensive LRU eviction, but the trainer admits only full fits.
 
 The budget covers retained tensor bytes, not Python metadata, decoder working
 memory, returned sample clones, batches or the PyTorch allocator. Cached tensors
@@ -360,7 +366,7 @@ Cache identity includes validated content fingerprints, accepted sample paths,
 timestamps, labels and control modes, alignment settings and exact preprocessing.
 Validation and exclusion checks still run before caching. A new run or resumed
 run rebuilds its cache; source recordings must remain immutable during a run.
-The cache budget is saved in the existing training configuration; older format-1
+This uses system RAM, not GPU VRAM. The cache budget is saved in the existing training configuration; older format-1
 checkpoints without the field remain loadable. Resume restores the saved budget
 and leaves all model/optimizer/RNG and best-checkpoint recovery semantics intact.
 `evaluate --cache-mib` also accepts an explicit budget; a one-pass standalone
