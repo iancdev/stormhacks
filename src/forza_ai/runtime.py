@@ -47,7 +47,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         mirror_fast_grab_s=0.08,
         throttle_cap=1.0, throttle_rate=0.0, max_speed_kmh=0.0,
         brake_gain=1.0, corner_speed_kmh=0.0, corner_angle_deg=15.0, corner_brake=0.6,
-        auto_rearm_s=0.0):
+        auto_rearm_s=0.0, ffb_scale=0.0, ffb_sign=1.0):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -396,6 +396,15 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                         adapter.write_virtual_state_before(virtual, actuation_deadline, physical_pedals=True)
                 elif direct_vjoy or auto_pedals:
                     adapter.write_virtual_state(virtual)
+                game_torque = 0.0
+                if (ffb_scale and not shadow and getattr(adapter, "use_motor", True)
+                        and status.mode in (ControlMode.MANUAL, ControlMode.TAKEOVER)
+                        and hasattr(adapter, "game_force")):
+                    # Human driving: replay the game's force feedback (sent to vJoy) on the real wheel.
+                    game_torque = max(-controller.config.torque_limit, min(controller.config.torque_limit,
+                                      ffb_sign * ffb_scale * adapter.game_force(time.monotonic_ns())))
+                if ffb_scale:
+                    summary["game_ffb_torque"] = round(game_torque, 4)       # 0 while the AI drives
                 if status.torque:
                     # Absolute host validity reaches the last native boundary;
                     # successful SDL preparation may still have consumed the budget.
@@ -404,6 +413,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                                              command.generated_time_ns + controller.config.max_command_age_ns,
                                              command.observation_time_ns + controller.config.max_observation_age_ns)
                     adapter.set_torque_before(status.torque, actuation_deadline)
+                elif game_torque:
+                    adapter.set_torque_before(game_torque, wheel.timestamp_ns + controller.config.max_wheel_age_ns)
                 else:
                     adapter.set_torque(0.0)
             except ActuationExpired:
@@ -523,7 +534,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                            speed_mps=vehicle.speed_mps if vehicle else "",
                            requested_angle_deg=command.target_angle_deg if command else "",
                            observation_age_ms=summary["observation_age_ms"],
-                           input_status=summary["input_status"])
+                           input_status=summary["input_status"],
+                           game_ffb_torque=summary.get("game_ffb_torque", ""))
                 rows.append(row)
             deadline += period
             remaining = deadline - time.monotonic()
@@ -644,6 +656,11 @@ def main(argv=None):
     parser.add_argument("--auto-rearm-s", type=float, default=0.0,
                         help="re-engage automatically if assistance dropped because of a network/timing blip "
                              "(never after a human takeover, pause or fault) within this many seconds; 0 = off")
+    parser.add_argument("--forward-ffb", type=float, default=0.0,
+                        help="replay the game's force feedback (sent to vJoy) on the TMX while YOU drive "
+                             "(manual/takeover), scaled by this factor (e.g. 0.5); 0 = off")
+    parser.add_argument("--ffb-sign", type=float, choices=(-1.0, 1.0), default=1.0,
+                        help="direction of the replayed game force; flip to -1 if it pushes the wrong way")
     parser.add_argument("--human-pedals", action="store_true",
                         help="use a steering+pedal (v2) model for steering only: your pedals drive the car "
                              "and pressing them does not take over")
@@ -813,6 +830,7 @@ def main(argv=None):
         adapter = WindowsAdapter(torque_limit=args.torque_limit, button_map=mapping,
                                  use_motor=not ((args.direct_vjoy and not args.mirror_wheel) or args.no_vjoy),
                                  min_update_ms=args.motor_update_ms, torque_step=args.torque_step,
+                                 forward_ffb=bool(args.forward_ffb),
                                  use_vjoy=not args.no_vjoy)
     else:
         adapter = SimulatedAdapter(torque_limit=args.torque_limit)
@@ -846,7 +864,7 @@ def main(argv=None):
                      throttle_cap=args.throttle_cap, throttle_rate=args.throttle_rate,
                      max_speed_kmh=args.max_speed_kmh, brake_gain=args.brake_gain,
                      corner_speed_kmh=args.corner_speed_kmh, corner_angle_deg=args.corner_angle_deg,
-                     auto_rearm_s=args.auto_rearm_s,
+                     auto_rearm_s=args.auto_rearm_s, ffb_scale=args.forward_ffb, ffb_sign=args.ffb_sign,
                      auto_pedals=args.auto_pedals, pedal_override=args.pedal_override,
                      dashboard_host=args.dashboard_host)
     except KeyboardInterrupt:

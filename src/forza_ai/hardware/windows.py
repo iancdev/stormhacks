@@ -55,6 +55,7 @@ class WindowsAdapter:
         use_vjoy: bool = True,
         min_update_ms: int = 0,
         torque_step: float = 0.0,
+        forward_ffb: bool = False,
     ):
         # Command throttling (opt-in). The TMX falls behind when stop/update/run is sent every
         # 10 ms: measured command->wheel delay grew from ~80 ms to ~260 ms within seconds. With
@@ -69,6 +70,10 @@ class WindowsAdapter:
         self.torque_step = float(torque_step)
         self._last_level = None
         self._last_sent_ns = 0
+        # Game force feedback arriving on vJoy (opt-in), for replay on the TMX while a human drives.
+        self.forward_ffb = bool(forward_ffb) and bool(use_vjoy)
+        self.game_ffb = None
+        self._ffb_registered = False
         # use_vjoy=False (observe-only shadow tests while Forza reads the TMX
         # directly): never acquire or write vJoy, so Forza doesn't get a second,
         # duplicated controller that it keeps switching to.
@@ -224,6 +229,15 @@ class WindowsAdapter:
         self._check_vjoy(self._sdk.AcquireVJD(self._vjoy_id), "acquire")
         self._vjoy_acquired = True
         self._reset_virtual()
+        if self.forward_ffb:
+            from .game_ffb import GameForceTracker
+            self.game_ffb = GameForceTracker()
+            self._sdk.FfbRegisterGenCB(self.game_ffb.handle, self._vjoy_id)
+            self._ffb_registered = True
+
+    def game_force(self, now_ns: int, max_age_ns: int = 150_000_000) -> float:
+        """Latest game constant force on vJoy, normalized to [-1, 1]; 0 if not forwarding or stale."""
+        return self.game_ffb.force(now_ns, max_age_ns) if self.game_ffb is not None else 0.0
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -465,6 +479,9 @@ class WindowsAdapter:
         if self._haptic:
             attempt(lambda: self._check_sdl(self._sdl.SDL_HapticStopAll(self._haptic),
                                            "SDL_HapticStopAll"))
+        if self._ffb_registered:
+            attempt(lambda: self._sdk.FfbRemoveCB(self._vjoy_id))
+            self._ffb_registered = False
         if self._vjoy_acquired:
             attempt(self._reset_virtual)
             attempt(self._release_vjoy)

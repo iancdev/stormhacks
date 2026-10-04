@@ -65,6 +65,12 @@ param(
     # Diagnosis: turn off wheel-grab takeover detection (Mirror) so every disengagement is a system
     # cause (network, game, fault). The takeover button still works as an emergency stop.
     [switch]$NoGrab,
+    # Replay Forza's force feedback (sent to vJoy) on the TMX while YOU drive or after a takeover.
+    # 0 = off. Flip -FfbSign to -1 if the wheel pushes the wrong way (calibrate once).
+    [ValidateRange(0, 2)]
+    [double]$ForwardFfb = 0.5,
+    [ValidateSet(1, -1)]
+    [int]$FfbSign = 1,
     # Mirror: grabbing the wheel takes over once it is this far from the AI's angle and still being
     # pulled away for 0.08 s (the old 30 deg / 0.3 s rule took 1-1.5 s against the motor). 0 = old rule only.
     [ValidateRange(0, 90)]
@@ -117,6 +123,7 @@ if ($Mode -eq "Mirror") {
     else { $runtimeArgs += @("--mirror-fast-grab-deg", $FastGrabDeg) }
 }
 # --motor-update-ms/--torque-step: the TMX queues commands sent every 10 ms and falls further behind.
+if ($Mode -ne "Vjoy" -and $ForwardFfb -gt 0) { $runtimeArgs += @("--forward-ffb", $ForwardFfb, "--ffb-sign", $FfbSign) }
 if ($Mode -ne "Vjoy") { $runtimeArgs += @("--kp", $Kp, "--kd", $Kd, "--friction", $Friction,
                                           "--motor-update-ms", 30, "--torque-step", 0.02) }
 
@@ -131,6 +138,7 @@ if ($HumanPedals) { Write-Host "Pedals: YOU drive gas and brake; the AI steers o
 else { Write-Host "AI pedals: throttle cap $ThrottleCap, ramp $ThrottleRate/s, speed cap $(if ($MaxSpeedKmh) { "$MaxSpeedKmh km/h" } else { 'off' }), brake x$BrakeGain, corner limit $(if ($CornerSpeedKmh) { "$CornerSpeedKmh km/h past $CornerAngleDeg deg" } else { 'off' })" }
 Write-Host "Dashboard: http://${DashboardHost}:$DashboardPort  (from the laptop: http://169.254.218.1:$DashboardPort)"
 Write-Host "Log: $status"
+if ($Mode -ne "Vjoy" -and $ForwardFfb -gt 0) { Write-Host "Game FFB on the wheel while you drive: x$ForwardFfb, sign $FfbSign" }
 if ($NoGrab) { Write-Warning "Grab-to-take-over is OFF: only button $TakeoverButton (or Ctrl+C) takes control back." }
 if ($Record) { Write-Host "RECORDING (DAgger) to $session - take over with button $TakeoverButton, correct, re-arm with $ArmButton" }
 Push-Location $repo
