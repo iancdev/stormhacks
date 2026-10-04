@@ -86,6 +86,10 @@ class WindowsAdapter:
         self._vjoy_acquired = False
         self._autocenter_disabled_confirmed = False
         self._closed = False
+        # SDL reports 0 on every axis until the wheel sends its first report, and a
+        # raw 0 pedal means half pressed. Treat each pedal as released until it moves.
+        self._first_pedals = None
+        self._pedal_seen = [False, False]   # brake a1, throttle a2
         self._vjoy_id = vjoy_device_id
         self.cleanup_errors: tuple[str, ...] = ()
         try:
@@ -119,6 +123,13 @@ class WindowsAdapter:
         sdl = self._sdl
         if not sdl.SDL_SetHint(sdl.SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, b"1"):
             raise self._sdl_error("Enable background wheel events")
+        if not self.use_motor:
+            # Without the motor, read the TMX through RawInput, never DirectInput:
+            # SDL's DirectInput backend acquires force-feedback wheels exclusively,
+            # which kills Forza's own FFB when Forza reads the TMX directly
+            # (same fix as record.py). RawInput is read-only and can't drive haptics.
+            sdl.SDL_SetHint(sdl.SDL_HINT_DIRECTINPUT_ENABLED, b"0")
+            sdl.SDL_SetHint(sdl.SDL_HINT_JOYSTICK_RAWINPUT, b"1")
         # Initialize separately so a partial initialization can always be undone.
         self._sdl_flags = []
         flags = (sdl.SDL_INIT_JOYSTICK, sdl.SDL_INIT_HAPTIC) if self.use_motor else (sdl.SDL_INIT_JOYSTICK,)
@@ -128,6 +139,15 @@ class WindowsAdapter:
             self._sdl_initialized = True
         count = sdl.SDL_NumJoysticks()
         self._check_sdl(count, "SDL_NumJoysticks")
+        if not self.use_motor:
+            # RawInput lists devices a moment after initialization.
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and not any(
+                    b"tmx" in (sdl.SDL_JoystickNameForIndex(i) or b"").lower() for i in range(count)):
+                sdl.SDL_JoystickUpdate()
+                time.sleep(0.05)
+                count = sdl.SDL_NumJoysticks()
+                self._check_sdl(count, "SDL_NumJoysticks")
         for index in range(count):
             name = sdl.SDL_JoystickNameForIndex(index)
             if name is None:
@@ -228,8 +248,16 @@ class WindowsAdapter:
             if self._haptic:
                 self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
             return WheelState(now_ns, 0, 0, 0, connected=False)
-        return WheelState(now_ns, steering_degrees(axes[0], self.rotation_deg),
-                          pedal_fraction(axes[2]), pedal_fraction(axes[1]), buttons)
+        pedals = (axes[1], axes[2])
+        if self._first_pedals is None:
+            self._first_pedals = pedals
+        # Exactly 0 is SDL's "no report yet" value (a released TMX pedal reads +32767);
+        # any nonzero or changed value is a real report.
+        self._pedal_seen = [seen or raw != 0 or raw != first
+                            for seen, raw, first in zip(self._pedal_seen, pedals, self._first_pedals)]
+        brake = pedal_fraction(axes[1]) if self._pedal_seen[0] else 0.0
+        throttle = pedal_fraction(axes[2]) if self._pedal_seen[1] else 0.0
+        return WheelState(now_ns, steering_degrees(axes[0], self.rotation_deg), throttle, brake, buttons)
 
     def _axis(self, usage: int, value: int) -> None:
         self._check_vjoy(self._sdk.SetAxis(value, self._vjoy_id, usage), "set axis")
