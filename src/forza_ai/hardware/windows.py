@@ -277,7 +277,7 @@ class WindowsAdapter:
             self._check_vjoy(self._sdk.SetBtn(physical in state.buttons, self._vjoy_id, virtual),
                              "set button")
 
-    def write_virtual_state_before(self, state: WheelState, deadline_ns: int) -> None:
+    def write_virtual_state_before(self, state: WheelState, deadline_ns: int, *, physical_pedals=False) -> None:
         if type(deadline_ns) is not int or deadline_ns < 0:
             raise ValueError('deadline_ns must be nonnegative integer nanoseconds')
         self._ensure_open()
@@ -287,7 +287,7 @@ class WindowsAdapter:
         try:
             x = vjoy_steering(state.angle_deg, self.rotation_deg)
             y, z = vjoy_pedal(state.brake), vjoy_pedal(state.throttle)
-            if not state.connected or (state.throttle > 0 and state.brake > 0):
+            if not state.connected or (not physical_pedals and state.throttle > 0 and state.brake > 0):
                 raise ValueError('invalid driving virtual state')
             # Release the previously active pedal before applying the other.
             axes = [(self._vjoy.HID_USAGE_X, x)]

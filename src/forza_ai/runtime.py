@@ -307,7 +307,12 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                                              command.valid_until_ns,
                                              command.generated_time_ns + controller.config.max_command_age_ns,
                                              command.observation_time_ns + controller.config.max_observation_age_ns)
-                    adapter.write_virtual_state_before(virtual, actuation_deadline)
+                    if auto_pedals:
+                        adapter.write_virtual_state_before(virtual, actuation_deadline)
+                    else:
+                        # Steering-only assistance preserves physical pedal input,
+                        # including a human pressing both pedals simultaneously.
+                        adapter.write_virtual_state_before(virtual, actuation_deadline, physical_pedals=True)
                 elif direct_vjoy or auto_pedals:
                     adapter.write_virtual_state(virtual)
                 if status.torque:
@@ -330,6 +335,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 human_control = False
                 command = None
                 controller.disengage("actuation_deadline_expired", fault=True)
+                status = replace(status, mode=controller.mode, reason="actuation_deadline_expired", torque=0.0)
                 status = replace(status, mode=controller.mode, reason=controller.reason, torque=0.0)
                 input_error = controller.reason
             if explicit_takeover:

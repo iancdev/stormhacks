@@ -29,7 +29,7 @@ class SimulatedAdapter:
     def write_virtual_state(self, state: WheelState):
         self.virtual_state = state
 
-    def write_virtual_state_before(self, state: WheelState, deadline_ns: int):
+    def write_virtual_state_before(self, state: WheelState, deadline_ns: int, *, physical_pedals=False):
         if time.monotonic_ns() >= deadline_ns:
             from dataclasses import replace
             self.virtual_state = replace(state, throttle=0.0, brake=0.0)
