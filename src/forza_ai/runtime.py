@@ -243,6 +243,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             previous_buttons = buttons
             takeover = takeover_button is not None and takeover_button in wheel.buttons
             explicit_takeover = takeover_button is not None and takeover_button in rising
+            takeover_source = "takeover button" if takeover else None
             wheel_arm = arm_button is not None and arm_button in rising
             wheel_route = route_button is not None and route_button in rising
             if direct_vjoy and engaged_at_tick_start and mirror_wheel:
@@ -253,6 +254,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                     grab_started_ns = grab_started_ns or time.monotonic_ns()
                     if time.monotonic_ns() - grab_started_ns >= mirror_grab_s * 1e9:
                         takeover = explicit_takeover = True
+                        takeover_source = takeover_source or f"slow wheel-grab rule ({deviation:.0f} deg off the AI)"
                 else:
                     grab_started_ns = None
                 if mirror_fast_grab_deg:
@@ -265,17 +267,22 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                         grab_away_since_ns = grab_away_since_ns or time.monotonic_ns()
                         if time.monotonic_ns() - grab_away_since_ns >= mirror_fast_grab_s * 1e9:
                             takeover = explicit_takeover = True
+                            takeover_source = takeover_source or (
+                                f"fast wheel-grab rule ({deviation:.0f} deg off, moving away)")
                     elif deviation <= mirror_fast_grab_deg or step * error > 0:
                         grab_away_since_ns = None
                 previous_deviation = wheel.angle_deg       # previous wheel angle, for its direction
             elif direct_vjoy and engaged_at_tick_start and abs(wheel.angle_deg) > direct_override_deg:
                 # No motor holds the wheel in this mode, so a deliberate turn is the human taking over.
                 takeover = explicit_takeover = True
+                takeover_source = takeover_source or "wheel turned past the override angle"
             if not engaged_at_tick_start:
                 grab_started_ns = grab_away_since_ns = previous_deviation = None
             pedal_pressed = auto_pedals and not shadow and max(wheel.throttle, wheel.brake) >= pedal_override
             if pedal_pressed:
                 takeover = True
+                takeover_source = takeover_source or (
+                    f"pedal (gas {wheel.throttle:.0%}, brake {wheel.brake:.0%}; limit {pedal_override:.0%})")
                 explicit_takeover = explicit_takeover or not previous_pedal_pressed
             previous_pedal_pressed = pedal_pressed
             local_events = []
@@ -296,6 +303,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 elif event in ("manual", "takeover"):
                     takeover = True
                     explicit_takeover = True
+                    takeover_source = takeover_source or "dashboard/console request"
                 elif event == "arm":
                     if not shadow and not engaged_at_tick_start and not policy_failed:
                         pending_arm = True
@@ -446,7 +454,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if engaged_at_tick_start and status.mode != ControlMode.ASSIST:
                 # One clear line per disengagement, plus a bounded list in the run summary/report.
                 cause = {
-                    "manual_takeover": "you took over (button, wheel grab or pedal)",
+                    "manual_takeover": "takeover by " + str(takeover_source or "unknown trigger"),
                     "inference_failure": "prediction failed: " + str(summary.get("last_inference_failure")),
                     "stale_command": "prediction arrived too late", "stale_observation": "frame too old",
                     "command_expired": "prediction expired", "no_command": "no prediction available",
@@ -458,6 +466,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 elapsed = time.monotonic() - started
                 entry = {"t_s": round(elapsed, 2), "reason": status.reason, "cause": cause,
                          "mode": status.mode.value, "input": input_error or "ready",
+                         "takeover_source": takeover_source,
+                         "gas": round(wheel.throttle, 3), "brake": round(wheel.brake, 3),
                          "speed_kmh": round(vehicle.speed_mps * 3.6, 1) if vehicle is not None else None,
                          "wheel_deg": round(wheel.angle_deg, 1), "target_deg": round(status.target_angle_deg, 1)}
                 log = summary.setdefault("disengagements", [])

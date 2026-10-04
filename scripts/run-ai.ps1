@@ -51,6 +51,10 @@ param(
     [double]$CornerSpeedKmh = 130,
     [ValidateRange(1, 90)]
     [double]$CornerAngleDeg = 15,
+    # With AI pedals, pressing gas or brake past this fraction takes over (raise it if a resting foot
+    # triggers takeovers).
+    [ValidateRange(0.02, 0.8)]
+    [double]$PedalOverride = 0.05,
     # AI steers only; you drive the gas and brake (pressing them does not take over).
     [switch]$HumanPedals,
     # Re-engage automatically after a network blip (timeout / late prediction) within this many
@@ -113,7 +117,8 @@ if ($SteeringOnlyModel) {
 } else {
     $runtimeArgs += @("--auto-pedals", "--throttle-cap", $ThrottleCap, "--throttle-rate", $ThrottleRate,
                       "--max-speed-kmh", $MaxSpeedKmh, "--brake-gain", $BrakeGain,
-                      "--corner-speed-kmh", $CornerSpeedKmh, "--corner-angle-deg", $CornerAngleDeg)
+                      "--corner-speed-kmh", $CornerSpeedKmh, "--corner-angle-deg", $CornerAngleDeg,
+                      "--pedal-override", $PedalOverride)
 }
 if ($Record) {
     $session = Join-Path $repo ("data/dagger/" + $Mode.ToLower() + "-" + $stamp)
