@@ -1,4 +1,4 @@
-"""Loopback-only status dashboard. HTTP handlers enqueue; they never drive hardware."""
+"""Status dashboard with explicit bind-host configuration. HTTP handlers enqueue; they never drive hardware."""
 
 from __future__ import annotations
 
@@ -53,6 +53,22 @@ def _safe(value, depth=0, budget=None):
     return None
 
 
+def validate_dashboard_host(host):
+    """Numeric IPv4 bind address (including wildcard), or existing IPv6 loopback."""
+    host = "127.0.0.1" if host == "localhost" else host
+    if not isinstance(host, str):
+        raise ValueError("dashboard host must be a literal IP address")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValueError("dashboard host must be a literal IP address") from exc
+    if address.version == 6 and not address.is_loopback:
+        raise ValueError("dashboard host supports IPv4 or IPv6 loopback")
+    if address.is_multicast or str(address) == "255.255.255.255":
+        raise ValueError("dashboard host must be unicast or 0.0.0.0")
+    return str(address)
+
+
 class Dashboard:
     """Publish best-effort snapshots without blocking the control loop.
 
@@ -63,19 +79,13 @@ class Dashboard:
 
     def __init__(self, command_queue, host="127.0.0.1", port=8766, *, read_only=False,
                  stale_after_seconds=0.5):
-        host = "127.0.0.1" if host == "localhost" else host
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError as exc:
-            raise ValueError("dashboard host must be a literal loopback address") from exc
-        if not address.is_loopback:
-            raise ValueError("dashboard is loopback-only; do not expose wheel controls on the LAN")
+        host = validate_dashboard_host(host)
         if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
             raise ValueError("invalid dashboard port")
         if not math.isfinite(stale_after_seconds) or stale_after_seconds <= 0:
             raise ValueError("stale_after_seconds must be finite and positive")
         self._queue = command_queue
-        self._host, self._port = str(address), port
+        self._host, self._port = host, port
         self._read_only = read_only
         self._stale_after_ns = int(stale_after_seconds * 1e9)
         self._token = secrets.token_urlsafe(32)
@@ -138,9 +148,16 @@ class Dashboard:
             def reject(self, code, message):
                 self.respond(code, json.dumps({"error": message}))
 
+            def request_origin(self):
+                # A wildcard LISTEN address is not a browser origin. The kernel's
+                # accepted-socket destination verifies the actual local interface;
+                # never derive the allowed origin from an untrusted Host header.
+                host, port = self.connection.getsockname()[:2]
+                authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+                return f"http://{authority}"
+
             def valid_host(self):
-                # Exact authority prevents DNS-rebinding requests even on loopback.
-                return self.headers.get_all("Host") == [owner.url.removeprefix("http://")]
+                return self.headers.get_all("Host") == [self.request_origin().removeprefix("http://")]
 
             def do_GET(self):
                 if not self.valid_host():
@@ -154,7 +171,7 @@ class Dashboard:
             def do_POST(self):
                 if self.path != "/api/events":
                     return self.reject(404, "not found")
-                if (not self.valid_host() or self.headers.get_all("Origin") != [owner.url]
+                if (not self.valid_host() or self.headers.get_all("Origin") != [self.request_origin()]
                         or self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin"):
                     return self.reject(403, "same-origin requests required")
                 if owner._read_only:

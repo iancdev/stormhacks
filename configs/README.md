@@ -61,7 +61,11 @@ with a real child process; Windows console behavior still requires device valida
   profile to assist. Shadow does open the driver for passthrough; driver-native
   forces can change on acquisition, so it is not a passive hardware probe.
 - `run.duration_s`: zero runs until stopped. `interactive` enables console
-  commands. `dashboard_port` may be `null` to disable the local dashboard.
+  commands. `dashboard_port` may be `null` to disable the dashboard.
+  `dashboard_host` defaults to `127.0.0.1`; set `0.0.0.0` for all IPv4 interfaces
+  or a specific LAN IPv4 to listen there. Browse to the game PC's actual LAN IP,
+  not `0.0.0.0`. LAN binding exposes status and existing control buttons on that
+  network; Host/Origin/CSRF checks remain. It does not engage assistance.
 - `recording.enabled`: save sessions for later training; false by default.
   `include_manual` is an explicit assertion that ordinary manual driving is
   an expert demonstration. Leave it false for AI evaluation and correction

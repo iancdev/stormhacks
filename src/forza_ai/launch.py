@@ -162,7 +162,7 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
     if role == "game" and "policy" in profile:
         raise ProfileError("game profiles use remote inference; policy belongs to the desktop profile")
     base = profile_path.parent
-    run = _object(profile.get("run", {}), "run", {"output_dir", "duration_s", "interactive", "dashboard_port"})
+    run = _object(profile.get("run", {}), "run", {"output_dir", "duration_s", "interactive", "dashboard_port", "dashboard_host"})
     if role == "desktop" and set(run) - {"output_dir"}:
         raise ProfileError("desktop run only accepts output_dir")
     output = _path(run.get("output_dir", "../runs"), "run.output_dir", base)
@@ -254,6 +254,11 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
         telemetry_port = _number(telemetry.get("port", 9999), "telemetry.port", minimum=1, maximum=65535, integer=True)
         duration = _number(run.get("duration_s", 0), "run.duration_s")
         interactive = _boolean(run.get("interactive", True), "run.interactive")
+        from forza_ai.dashboard import validate_dashboard_host
+        try:
+            dashboard_host = validate_dashboard_host(run.get("dashboard_host", "127.0.0.1"))
+        except ValueError as error:
+            raise ProfileError(str(error)) from error
         dashboard_port = run.get("dashboard_port")
         if dashboard_port is not None:
             _number(dashboard_port, "run.dashboard_port", minimum=1, maximum=65535, integer=True)
@@ -298,7 +303,7 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
         if interactive:
             argv += ["--interactive"]
         if dashboard_port is not None:
-            argv += ["--dashboard-port", str(dashboard_port)]
+            argv += ["--dashboard-port", str(dashboard_port), "--dashboard-host", dashboard_host]
         if duration > 0 and duration * config["hz"] <= 100_000:
             argv += ["--status-csv", str(run_dir / "control.csv")]
         if recording_dir is not None:

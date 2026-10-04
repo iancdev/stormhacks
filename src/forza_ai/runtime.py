@@ -42,7 +42,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         progress=False, arm_timeout=5.0, foreground_guard=None, arm_button=None,
         route_button=None, recorder=None, record_manual=False, takeover_settle_ms=100.0,
         dashboard_port=None, run_report=None, direct_vjoy=False, direct_override_deg=20.0,
-        auto_pedals=False, pedal_override=0.05):
+        auto_pedals=False, pedal_override=0.05, dashboard_host="127.0.0.1"):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -120,9 +120,13 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             recorder.start()
         if dashboard_port is not None:
             from forza_ai.dashboard import Dashboard
-            dashboard = Dashboard(events, port=dashboard_port)
+            dashboard = Dashboard(events, host=dashboard_host, port=dashboard_port)
             dashboard.start()
-            print(f"Live dashboard: {dashboard.url}", flush=True)
+            if dashboard.address[0] == "0.0.0.0":
+                print(f"Dashboard listening on 0.0.0.0:{dashboard.address[1]}; "
+                      f"open http://<THIS-PC-LAN-IP>:{dashboard.address[1]} in your browser.", flush=True)
+            else:
+                print(f"Live dashboard: {dashboard.url}", flush=True)
         if progress:
             from forza_ai.reporting import ProgressReporter
             progress_worker = ProgressReporter()
@@ -517,6 +521,8 @@ def main(argv=None):
     parser.add_argument("--game-process", default="ForzaHorizon4.exe", help="foreground EXE required for live input")
     parser.add_argument("--status-csv", type=Path)
     parser.add_argument("--run-report", type=Path, help="bounded-memory metrics JSON, also for unlimited runs")
+    parser.add_argument("--dashboard-host", default="127.0.0.1",
+                        help="dashboard bind IP; 0.0.0.0 listens on all IPv4 interfaces (default localhost)")
     parser.add_argument("--dashboard-port", type=int, help="local browser dashboard port (0 selects a free port)")
     parser.add_argument("--record-session", type=Path, help="new session directory for integrated training data")
     parser.add_argument("--record-manual", action="store_true", help="declare initial manual driving as expert data")
@@ -529,6 +535,11 @@ def main(argv=None):
     parser.add_argument("--override-deg", type=float, default=20.0,
                         help="--direct-vjoy only: turning the wheel past this many degrees takes over")
     args = parser.parse_args(argv)
+    from forza_ai.dashboard import validate_dashboard_host
+    try:
+        args.dashboard_host = validate_dashboard_host(args.dashboard_host)
+    except ValueError as error:
+        parser.error(str(error))
     live_mode = bool(args.model or args.inference_host)
     if args.auto_pedals and not live_mode:
         parser.error('--auto-pedals requires --model or --inference-host')
@@ -636,7 +647,8 @@ def main(argv=None):
                      takeover_settle_ms=args.takeover_settle_ms,
                      dashboard_port=args.dashboard_port, run_report=args.run_report,
                      direct_vjoy=args.direct_vjoy, direct_override_deg=args.override_deg,
-                     auto_pedals=args.auto_pedals, pedal_override=args.pedal_override)
+                     auto_pedals=args.auto_pedals, pedal_override=args.pedal_override,
+                     dashboard_host=args.dashboard_host)
     except KeyboardInterrupt:
         print("Stopped; hardware cleanup requested.")
         return 0
