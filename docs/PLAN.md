@@ -150,3 +150,17 @@ and bounds status/control requests through response decoding. Stalled requests
 cannot retain a live-looking state indefinitely; retries restore fresh display
 state, and uncertain command delivery is reported explicitly. Five deterministic
 client regressions pass; full integration: **489 tests and 197 subtests passed**.
+
+## Windows path portability follow-up
+
+Actual Windows validation exposed native separators in auxiliary provenance and
+ZIP name normalization before validation. Integrated `542e33e` and `ca5cd66`
+use portable relative paths, canonical UTF-8/LF generated manifests, and raw ZIP
+names. Literal backslashes remain rejected by default; explicitly enabled legacy
+normalization preserves containment, collision, and reserved-name checks.
+
+Full Mac integration: **505 tests and 197 subtests passed**. A fresh extraction
+and strict import of the original archive with legacy normalization accepted
+1,988 rows and rejected 9 for ambiguous ages. All 1,999 raw files and copied bytes,
+and the previously verified fingerprint, stayed unchanged. Actual Windows
+regression verification remains pending; no real training or hardware was run here.
