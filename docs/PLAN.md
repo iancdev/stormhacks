@@ -95,7 +95,8 @@ legacy Ctrl+C empty-tail compatibility and read-only diagnostic inspection of
 known extended CSV fields. Diagnostic objects cannot enter production splits.
 The coordinating chat reports an isolated CUDA smoke on the supplied sample;
 that does not establish production import compatibility or driving quality.
-The actual extended producer schema remains gated pending its source/context.
+At that checkpoint, the actual extended producer schema remained gated pending
+source/context. The recorder merge reconciliation below resolves that schema gate.
 
 Latest integrated verification after all harness fixes and `5587452` integration:
 **445 tests and 192 subtests passed**. Native deadline propagation and transient
@@ -105,7 +106,39 @@ motor/console behavior and real LAN acceptance remain separate gates.
 
 ## Next integration gates
 
+The recorder compatibility work described below is complete; remaining data
+work is validation on the intended Windows checkout and sufficient independent
+eligible recording groups, not a schema relaxation.
+
 1. Collect at least two independent completed recordings. Import `record.py` output with `import-recording SOURCE DEST --expert-mode manual`, then validate. The importer preserves rounded aligned-label timing provenance and whole-recording split groups; it does not fabricate precise capture timestamps. Stream-based v1 sessions remain supported separately.
 2. Set up the portable training CLI on `DESKTOP-0HR4O88`, verify CUDA availability, then transfer completed real sessions for training. Colab notebook is a fallback. No real training is scheduled or started automatically.
 3. User runs the Windows acceptance procedure for passthrough, +/-5-degree stationary tracking, takeover, expiry, and cleanup. Tune PD gains only against observed hardware behavior.
 4. Live capture, telemetry matching, local model wrapper, and LAN inference client/server are implemented. Verify the small fixed-target network path first, then load the exported real policy on the desktop and run shadow mode with source capture times preserved. Road-force replay remains a later independent increment.
+
+## Recorder merge reconciliation
+
+Main was safely fast-forwarded from `fb47879` to
+`26f097006f452668fe4b71186934dcedb1c2de71`, which merged recorder-updates. Its
+source established the 17-column rewind and 20-column car/takeover families,
+including intentionally discarded buffered frames and valid ID gaps.
+
+The merge had overwritten standalone fresh-capture and detach/writer fixes;
+`d723cc5` restores them around RawInput, HUD capture, rewind/takeover behavior,
+and the original buffering semantics. Default capture remains 30 FPS; future
+files include declared producer schema and source SHA256. The native deadline,
+sticky inference-failure and launcher fixes remained unchanged by the merge.
+
+Importer changes `c9ece48`, `9ec1434` and `34c6254` support exact producer
+families, validate discard/gap accounting, preserve original artifacts, and apply
+mandatory exclusions to import and production loading/splitting. The policy is
+packaged with installed distributions. Prefixes `20261003_150225` and
+`20261003_152123` remain blocked. HUD sync configuration is accepted without
+including that patch in the model's road view.
+
+Post-integration verification: **484 tests and 197 subtests passed**. Repeated
+strict import of archive SHA256
+`7829b5458609202f8ddd970ed0d789800a1347e775cbb0360234a10f214fbaeb`
+(13,689,689 bytes) accepted **1,988** rows and excluded **9** for ambiguous ages.
+All 1,999 original source files and copied contents remained byte-identical.
+The single group still fails production splitting; no second group was
+fabricated, and no training/hardware/live policy was started by this integration.

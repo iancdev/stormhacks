@@ -57,6 +57,14 @@ possible. Only zero label offset is supported; no interpolation or fabricated
 high-frequency streams are introduced. Age bounds include rounding uncertainty.
 The whole source recording is one split group, including all pause segments.
 
+The merged buffered recorder's exact 17- and 20-column variants are supported.
+Extended fields are retained as provenance, not silently added to model inputs.
+Frame IDs may have gaps explained by queue drops or intentional rewind/takeover/
+stop discards. `segments` counts opened intervals, which can be discarded
+entirely before any frame persists. CSV/file/count/discard consistency is checked
+against the producer family. Repository exclusions are mandatory at import and
+production loading; additional rule files only add exclusions.
+
 For live input from this recorder's model, `--capture-config config/capture.json`
 applies the same monitor, crop, masks, saved width/even height, and OpenCV
 `INTER_AREA` resize before the model's exported preprocessing. Live RGB arrays
