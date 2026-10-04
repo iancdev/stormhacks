@@ -50,7 +50,9 @@ $runtimeArgs = @("-m", "forza_ai.runtime", "--backend", "windows",
     "--dashboard-host", $DashboardHost, "--dashboard-port", $DashboardPort)
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
 if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel") }
-if ($Mode -ne "Vjoy") { $runtimeArgs += @("--kp", $Kp, "--kd", $Kd, "--friction", $Friction) }
+# --motor-update-ms/--torque-step: the TMX queues commands sent every 10 ms and falls further behind.
+if ($Mode -ne "Vjoy") { $runtimeArgs += @("--kp", $Kp, "--kd", $Kd, "--friction", $Friction,
+                                          "--motor-update-ms", 30, "--torque-step", 0.02) }
 
 if ($DashboardHost -eq "0.0.0.0") {
     Write-Warning "Dashboard on ALL networks: anyone who can reach this PC can open it and press ARM."

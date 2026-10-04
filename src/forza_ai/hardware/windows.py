@@ -53,7 +53,22 @@ class WindowsAdapter:
         vjoy_device_id: int = 1,
         use_motor: bool = True,
         use_vjoy: bool = True,
+        min_update_ms: int = 0,
+        torque_step: float = 0.0,
     ):
+        # Command throttling (opt-in). The TMX falls behind when stop/update/run is sent every
+        # 10 ms: measured command->wheel delay grew from ~80 ms to ~260 ms within seconds. With
+        # min_update_ms, an unchanged (torque_step-quantized) force is not resent sooner than that,
+        # and a repeated stop is skipped. A skip never extends force beyond the effect already
+        # running, whose length is still bounded by the caller's deadline.
+        if type(min_update_ms) is not int or not 0 <= min_update_ms <= 100:
+            raise ValueError("min_update_ms must be an integer from 0 to 100")
+        if not 0 <= torque_step <= 0.1:
+            raise ValueError("torque_step must be within [0, 0.1]")
+        self.min_update_ms = min_update_ms
+        self.torque_step = float(torque_step)
+        self._last_level = None
+        self._last_sent_ns = 0
         # use_vjoy=False (observe-only shadow tests while Forza reads the TMX
         # directly): never acquire or write vJoy, so Forza doesn't get a second,
         # duplicated controller that it keeps switching to.
@@ -240,6 +255,7 @@ class WindowsAdapter:
         sdl.SDL_JoystickUpdate()  # void API
         if not self._attached():
             if self._haptic:
+                self._last_level = None
                 self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
             return WheelState(now_ns, 0, 0, 0, connected=False)
         # Axis/button APIs use zero for both a valid value and failure. Clear and
@@ -252,6 +268,7 @@ class WindowsAdapter:
             raise self._sdl_error("Read TMX axes/buttons")
         if not self._attached():
             if self._haptic:
+                self._last_level = None
                 self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
             return WheelState(now_ns, 0, 0, 0, connected=False)
         pedals = (axes[1], axes[2])
@@ -370,9 +387,22 @@ class WindowsAdapter:
                 raise ActuationExpired("actuation deadline expired before native output")
             if not self._attached():
                 raise HardwareError("TMX disconnected")
+            if self.torque_step and level:
+                step = max(1, int(self.torque_step * 32767))
+                quantized = int(round(level / step)) * step
+                cap = abs(sdl_force_level(self.torque_limit, self.torque_limit))
+                level = max(-cap, min(cap, quantized))
+            if self.min_update_ms:
+                now = time.monotonic_ns()
+                if level == 0 and self._last_level == 0:
+                    return                                   # already stopped
+                if (level and level == self._last_level
+                        and now - self._last_sent_ns < self.min_update_ms * 1_000_000):
+                    return                                   # same force still running
             self._check_sdl(sdl.SDL_HapticStopEffect(self._haptic, self._effect_id),
                             "SDL_HapticStopEffect")
             if level == 0:
+                self._last_level, self._last_sent_ns = 0, time.monotonic_ns()
                 return
             self._effect.constant.level = level
             effect_ms = self.effect_ttl_ms
@@ -399,7 +429,9 @@ class WindowsAdapter:
                             "SDL_HapticRunEffect")
             if timed and time.monotonic_ns() + effect_ms * 1_000_000 > deadline_ns:
                 raise ActuationExpired("actuation deadline exhausted by native start")
+            self._last_level, self._last_sent_ns = level, time.monotonic_ns()
         except BaseException:
+            self._last_level = None                          # unknown state: next call resends
             try:
                 self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
             except Exception:

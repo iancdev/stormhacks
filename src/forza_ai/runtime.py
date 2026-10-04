@@ -573,6 +573,11 @@ def main(argv=None):
                              "(motor/haptics never opened; Forza must use the vJoy wheel)")
     parser.add_argument("--override-deg", type=float, default=20.0,
                         help="--direct-vjoy only: turning the wheel past this many degrees takes over")
+    parser.add_argument("--motor-update-ms", type=int, default=0,
+                        help="don't resend an unchanged motor force sooner than this (ms); the TMX queues "
+                             "commands sent every 10 ms and falls behind. 0 = resend every tick (default)")
+    parser.add_argument("--torque-step", type=float, default=0.0,
+                        help="round motor force to this step (e.g. 0.02) so tiny changes don't trigger commands")
     parser.add_argument("--mirror-wheel", action="store_true",
                         help="with --direct-vjoy: Forza follows the AI through vJoy AND the motor turns the "
                              "wheel to mirror it (display only); grabbing the wheel takes over")
@@ -674,6 +679,7 @@ def main(argv=None):
         from forza_ai.hardware import WindowsAdapter
         adapter = WindowsAdapter(torque_limit=args.torque_limit, button_map=mapping,
                                  use_motor=not ((args.direct_vjoy and not args.mirror_wheel) or args.no_vjoy),
+                                 min_update_ms=args.motor_update_ms, torque_step=args.torque_step,
                                  use_vjoy=not args.no_vjoy)
     else:
         adapter = SimulatedAdapter(torque_limit=args.torque_limit)
