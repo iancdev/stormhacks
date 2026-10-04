@@ -15,7 +15,7 @@ control, and loopback networking; no physical motors were operated.
 | Recorder detach | Attachment checks around polling, invalidation of readiness/cached samples, error propagation and neutralization | `bef8f09`; detach-after-warmup and detach-during-capture regressions |
 | Launcher interrupt | Explicit child lifecycle, 15-second cleanup grace, bounded escalation, durable exit outcome | `406fbe9`; real 700 ms child cleanup and repeated-interrupt regressions |
 
-Final integrated verification: **445 tests and 192 subtests passed** after the
+Initial integrated verification: **445 tests and 192 subtests passed** after the
 fixes and the separately owned bounded data-compatibility update. Follow-up
 reviews found no blocking gap in deadline propagation or failure-generation
 consumption. Desktop/narrow dashboard controls were tested with synthetic data.
@@ -88,6 +88,23 @@ directly (about 720 ms), but was terminated through the launcher after about
 Manage child lifecycle explicitly: wait for a bounded graceful shutdown on
 interrupt, escalate only after that deadline, and persist the exit manifest in
 the cleanup path. Verify actual Windows console-signal behavior as well.
+
+## P2 follow-up: stalled dashboard requests retain live controls
+
+Location: `src/forza_ai/dashboard.py`, browser `refresh`.
+
+A status fetch that never settled also prevented the next refresh from being
+scheduled. A Node reproduction against the actual inline script retained the
+connected/manual view with Engage enabled after 1,200 ms, with no render or
+retry. A stalled response body had the same effect.
+
+The browser now independently marks snapshots stale after 500 ms and bounds
+status/control requests, including body decoding, to one second. Failed status
+requests render offline and resume polling. Timed-out control requests report
+delivery unconfirmed because a lost response does not prove the command failed.
+Five deterministic browser-script regressions cover stalled fetches and bodies,
+freshness, recovery, and uncertain command delivery. The full suite after recorder
+integration and this follow-up passes **489 tests and 197 subtests**.
 
 ## Scope and next action
 

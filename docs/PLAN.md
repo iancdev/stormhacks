@@ -142,3 +142,11 @@ strict import of archive SHA256
 All 1,999 original source files and copied contents remained byte-identical.
 The single group still fails production splitting; no second group was
 fabricated, and no training/hardware/live policy was started by this integration.
+
+## Dashboard connection-health follow-up
+
+The dashboard now expires displayed freshness independently of HTTP completion
+and bounds status/control requests through response decoding. Stalled requests
+cannot retain a live-looking state indefinitely; retries restore fresh display
+state, and uncertain command delivery is reported explicitly. Five deterministic
+client regressions pass; full integration: **489 tests and 197 subtests passed**.

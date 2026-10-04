@@ -60,6 +60,10 @@ source is absent. Remote prediction time includes the network round trip.
 Simulation, shadow, fault, stale, and disconnected states are explicitly distinct.
 The sticky header keeps Disengage AI visible while scrolling. A queued request
 is shown as confirmed only after a subsequent fresh runtime snapshot supports it.
+An independent browser timer marks snapshots stale after 500 ms, even while an
+HTTP request is stalled. Status and control requests have a one-second deadline,
+including response decoding; polling resumes after failures. A timed-out control
+request is reported as delivery unconfirmed because the runtime may have queued it.
 
 Keep the game foreground during assisted driving. Inspect the dashboard on a
 second screen without taking focus, or use the physical buttons. Clicking the
