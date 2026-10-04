@@ -39,12 +39,13 @@ Overtaking, navigation, and reinforcement learning are future extensions.
 
 ## Status
 
-The tested hardware diagnostic is in `utils/test.py`. Training, recorder import, physical control, matching capture, LAN inference, wheel re-engagement, integrated correction recording, a local dashboard, run reports, and saved two-PC profiles are implemented. `record.py` targets 30 fresh FPS by the user's latest preference and reports measured performance. The desktop trains and serves predictions; the game/wheel PC captures input and controls the wheel locally. Real sessions are pending, and actual Windows movement, desktop GPU, and two-PC operation still require acceptance.
+The tested hardware diagnostic is in `utils/test.py`. Training, recorder import, physical control, matching capture, LAN inference, wheel re-engagement, integrated correction recording, a local dashboard, run reports, and saved two-PC profiles are implemented. `record.py` targets 30 fresh FPS by the user's latest preference and reports measured performance. The desktop trains and serves predictions; the game/wheel PC captures input and controls the wheel locally. A first real steering/throttle/brake GPU run is complete; its offline results and limitations are documented below. It has not been activated or demonstrated to drive a lap.
 
 - [Durable delivery plan and ownership](docs/PLAN.md)
 - [Shared recording and model contracts](docs/CONTRACTS.md)
 - [Adapter usage and Windows acceptance](docs/ADAPTER.md)
 - [Training, dataset transfer, and inference](docs/TRAINING.md)
+- [First real steering/throttle/brake training results](docs/DRIVING_BASELINE_RESULTS.md)
 - [Colab notebook](notebooks/train_colab.ipynb)
 - [Primary two-PC setup: desktop training/inference and game/wheel control](docs/TWO_PC_SETUP.md)
 - [Operator controls, dashboard, correction recording, and reports](docs/OPERATIONS.md)
