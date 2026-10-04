@@ -106,3 +106,26 @@ def test_deadline_writer_preserves_human_overlapping_pedals_only_when_explicit()
         assert rig.virtual_axes[0x31] < 32768 and rig.virtual_axes[0x32] < 32768
     finally:
         adapter.close()
+
+
+def test_mirror_wheel_drives_vjoy_from_ai_and_moves_the_wheel_with_the_motor():
+    adapter = RecordingAdapter()
+    summary = run(adapter, FixedAnglePolicy(10.0), duration=1.5, assist=True, direct_vjoy=True, mirror_wheel=True)
+    assert summary["mode"] == ControlMode.ASSIST.value
+    assert abs(adapter.writes[-1] - 10.0) < 1e-6        # Forza gets the AI's angle directly
+    assert summary["max_abs_torque"] > 0.0              # the motor is used to mirror it
+    assert adapter.angle > 5.0                          # and the physical wheel follows
+
+
+def test_mirror_wheel_grab_far_from_target_takes_over():
+    adapter = RecordingAdapter(forced_angle_after=(60, -40.0))   # human holds the wheel at -40 deg
+    summary = run(adapter, FixedAnglePolicy(10.0), duration=1.5, assist=True, direct_vjoy=True, mirror_wheel=True)
+    assert summary["mode"] == ControlMode.TAKEOVER.value
+    assert summary["reason"] == "manual_takeover"
+    assert adapter.writes[-1] == -40.0                  # back to the human's wheel
+
+
+def test_mirror_wheel_requires_direct_vjoy():
+    import pytest
+    with pytest.raises(ValueError):
+        run(RecordingAdapter(), FixedAnglePolicy(5.0), duration=0.1, assist=True, mirror_wheel=True)

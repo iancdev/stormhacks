@@ -42,7 +42,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         progress=False, arm_timeout=5.0, foreground_guard=None, arm_button=None,
         route_button=None, recorder=None, record_manual=False, takeover_settle_ms=100.0,
         dashboard_port=None, run_report=None, direct_vjoy=False, direct_override_deg=20.0,
-        auto_pedals=False, pedal_override=0.05, dashboard_host="0.0.0.0"):
+        auto_pedals=False, pedal_override=0.05, dashboard_host="0.0.0.0",
+        mirror_wheel=False, mirror_grab_deg=30.0, mirror_grab_s=0.3):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -92,6 +93,10 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             raise ValueError("shadow mode cannot engage assistance")
         if direct_vjoy and (not math.isfinite(direct_override_deg) or direct_override_deg <= 0):
             raise ValueError("direct_override_deg must be finite and positive")
+        if mirror_wheel and not direct_vjoy:
+            raise ValueError("mirror_wheel is a direct_vjoy option: Forza follows the AI, the wheel only mirrors it")
+        if mirror_wheel and not (mirror_grab_deg > 0 and mirror_grab_s > 0):
+            raise ValueError("mirror grab threshold and time must be positive")
         if auto_pedals and not getattr(policy, 'driving', False):
             raise ValueError('auto_pedals requires a v2 driving policy; steering-only models cannot control pedals')
         if not math.isfinite(pedal_override) or not 0 < pedal_override < 1:
@@ -157,6 +162,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         active_arm_until = started + arm_timeout if assist else 0.0
         previous_buttons = None
         previous_pedal_pressed = False
+        grab_started_ns = None
         route_active = False
         human_control = bool(record_manual)
         expert_after_ns = 0
@@ -216,9 +222,20 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             explicit_takeover = takeover_button is not None and takeover_button in rising
             wheel_arm = arm_button is not None and arm_button in rising
             wheel_route = route_button is not None and route_button in rising
-            if direct_vjoy and engaged_at_tick_start and abs(wheel.angle_deg) > direct_override_deg:
+            if direct_vjoy and engaged_at_tick_start and mirror_wheel:
+                # The motor turns the wheel to mirror the AI, so a turn alone isn't a takeover; holding
+                # the wheel far from where the AI is turning it, for a moment, is.
+                if abs(wheel.angle_deg - controller.target) > mirror_grab_deg:
+                    grab_started_ns = grab_started_ns or time.monotonic_ns()
+                    if time.monotonic_ns() - grab_started_ns >= mirror_grab_s * 1e9:
+                        takeover = explicit_takeover = True
+                else:
+                    grab_started_ns = None
+            elif direct_vjoy and engaged_at_tick_start and abs(wheel.angle_deg) > direct_override_deg:
                 # No motor holds the wheel in this mode, so a deliberate turn is the human taking over.
                 takeover = explicit_takeover = True
+            if not engaged_at_tick_start:
+                grab_started_ns = None
             pedal_pressed = auto_pedals and not shadow and max(wheel.throttle, wheel.brake) >= pedal_override
             if pedal_pressed:
                 takeover = True
@@ -304,7 +321,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if output_error:
                 controller.disengage(output_error, fault=wheel_error is not None)
                 status = replace(status, mode=controller.mode, reason=output_error, torque=0.0)
-            if direct_vjoy:
+            if direct_vjoy and not mirror_wheel:
                 status = replace(status, torque=0.0)
             virtual = virtual_driving_state(wheel, status, command, direct_vjoy, auto_pedals)
             try:
@@ -556,10 +573,17 @@ def main(argv=None):
                              "(motor/haptics never opened; Forza must use the vJoy wheel)")
     parser.add_argument("--override-deg", type=float, default=20.0,
                         help="--direct-vjoy only: turning the wheel past this many degrees takes over")
+    parser.add_argument("--mirror-wheel", action="store_true",
+                        help="with --direct-vjoy: Forza follows the AI through vJoy AND the motor turns the "
+                             "wheel to mirror it (display only); grabbing the wheel takes over")
+    parser.add_argument("--mirror-grab-deg", type=float, default=30.0,
+                        help="--mirror-wheel: holding the wheel this far from the AI's angle for 0.3 s takes over")
     parser.add_argument("--no-vjoy", action="store_true",
                         help="observe only, for --shadow while Forza reads the TMX directly: never acquire or "
                              "write vJoy (otherwise Forza sees a duplicate controller) and never open the motor")
     args = parser.parse_args(argv)
+    if args.mirror_wheel and not args.direct_vjoy:
+        parser.error("--mirror-wheel requires --direct-vjoy")
     if args.no_vjoy and not args.shadow:
         parser.error("--no-vjoy is only for --shadow tests; driving needs vJoy")
     from forza_ai.dashboard import validate_dashboard_host
@@ -649,7 +673,7 @@ def main(argv=None):
             parser.error("Windows runs require --takeover-button with your verified SDL button index")
         from forza_ai.hardware import WindowsAdapter
         adapter = WindowsAdapter(torque_limit=args.torque_limit, button_map=mapping,
-                                 use_motor=not (args.direct_vjoy or args.no_vjoy),
+                                 use_motor=not ((args.direct_vjoy and not args.mirror_wheel) or args.no_vjoy),
                                  use_vjoy=not args.no_vjoy)
     else:
         adapter = SimulatedAdapter(torque_limit=args.torque_limit)
@@ -678,6 +702,7 @@ def main(argv=None):
                      takeover_settle_ms=args.takeover_settle_ms,
                      dashboard_port=args.dashboard_port, run_report=args.run_report,
                      direct_vjoy=args.direct_vjoy, direct_override_deg=args.override_deg,
+                     mirror_wheel=args.mirror_wheel, mirror_grab_deg=args.mirror_grab_deg,
                      auto_pedals=args.auto_pedals, pedal_override=args.pedal_override,
                      dashboard_host=args.dashboard_host)
     except KeyboardInterrupt:
