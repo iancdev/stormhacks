@@ -43,10 +43,12 @@ Windows placeholder targets are restricted to +/-15 degrees at the CLI. The cont
 - Its timestamp is host poll time. SDL exposes cached axes without a USB report timestamp, so age checks detect host delays but cannot independently establish the age of an unchanged device report.
 - `write_virtual_state(state)` forwards measured steering/pedals and explicitly mapped buttons.
 - `set_torque(value)` consumes a normalized physical-right-positive value; the hardware layer handles SDL sign conversion and clamps it again.
+- Live nonzero control uses `set_torque_before(value, deadline_ns)`, passing the earliest wheel/command/source expiry to the native boundary. Slow preparation cannot silently renew an expired command; late native returns stop the effect and latch a fault. Native calls themselves are synchronous and still require hardware timing validation.
 - `close()` releases force effects, wheel handles, and vJoy ownership.
 - `autocenter_disabled_confirmed` reports whether SDL confirmed disabling native centering. False is expected on some TMX drivers and does not prove centering is active or inactive. Opening SDL itself can reset or enable native effects; validate actual behavior on the wheel PC. Zero torque stops our effect, not a guarantee of mechanically force-free hardware.
 - `SteeringController.step(...)` is pure Python and owns engagement, PD, target slew limits, and time validity.
 - `PolicyWorker` keeps only the newest observation and command. Inference cannot block the motor thread; no queue of old steering commands accumulates.
+- Inference failures also have a persistent generation counter. A successful quick retry cannot erase an unobserved failure; the runtime consumes it and requires a later explicit arm request.
 - `TelemetryReceiver.latest(...)` returns an age-bounded sample without refreshing its timestamp. `at_or_before(frame_time)` supplies causal speed features. Live runtime rejects paused, missing, stale, or non-foreground game inputs and invalidates in-flight predictions.
 
 See [CONTRACTS.md](CONTRACTS.md) for units, recording format, and the model export boundary.

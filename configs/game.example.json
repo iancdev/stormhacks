@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "role": "game",
+  "mode": "shadow",
+  "inference": {
+    "host": null,
+    "port": 8765,
+    "timeout_s": 0.2
+  },
+  "capture": {
+    "config_path": null,
+    "hz": 30,
+    "game_process": "ForzaHorizon4.exe"
+  },
+  "buttons": {
+    "takeover": null,
+    "arm": null,
+    "route": null,
+    "virtual_map": []
+  },
+  "control": {
+    "hz": 100,
+    "policy_hz": 30,
+    "torque_limit": 0.15,
+    "kp": 0.008,
+    "kd": 0.001,
+    "target_rate_deg_s": 60,
+    "target_limit_deg": 90
+  },
+  "telemetry": {
+    "port": 9999
+  },
+  "run": {
+    "duration_s": 0,
+    "interactive": true,
+    "dashboard_port": 8766,
+    "output_dir": "../runs"
+  },
+  "recording": {
+    "enabled": false,
+    "include_manual": false
+  }
+}

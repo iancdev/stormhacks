@@ -24,6 +24,9 @@ hardware = [
 
 [project.scripts]
 forza-train = "forza_ai.training.cli:main"
+forza-run = "forza_ai.runtime:main"
+forza-launch = "forza_ai.launch:main"
+forza-report = "forza_ai.metrics:main"
 forza-analytics = "forza_ai.analytics.cli:main"
 
 [tool.setuptools.packages.find]
@@ -32,3 +35,6 @@ namespaces = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+"forza_ai.data" = ["exclude_sessions.txt"]

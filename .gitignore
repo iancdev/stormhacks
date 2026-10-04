@@ -11,6 +11,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+/configs/*.local.json
 
 # Driving recordings, models, and runtime output
 /data/

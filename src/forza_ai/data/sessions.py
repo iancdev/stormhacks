@@ -83,6 +83,8 @@ def _number(row, key, low, high):
 def load_session(path: Path, alignment: Alignment = Alignment()) -> Session:
     path = Path(path).resolve()
     metadata = json.loads((path / "metadata.json").read_text())
+    from forza_ai.data.exclusions import enforce_manifest
+    enforce_manifest(metadata)
     if metadata.get('schema_version') == 'record_py_aligned_v1':
         from forza_ai.data.recording import load_recording
         return load_recording(path, metadata, alignment)
@@ -194,6 +196,11 @@ def load_sessions(root: Path, alignment: Alignment = Alignment()) -> list[Sessio
 
 
 def split_sessions(sessions: list[Session], validation_fraction: float, seed: int):
+    if any(session.provenance.get('diagnostic_only') for session in sessions):
+        raise ValueError('diagnostic-only recordings cannot enter production train/validation splits')
+    from forza_ai.data.exclusions import enforce_exclusions
+    for session in sessions:
+        enforce_exclusions(session.session_id, session.group, session.provenance.get('source_session'))
     groups = sorted({session.group for session in sessions})
     if not 0 < validation_fraction < 1 or len(groups) < 2:
         raise ValueError("need at least two independent session groups and 0 < validation_fraction < 1")

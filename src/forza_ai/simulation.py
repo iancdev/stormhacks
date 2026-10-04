@@ -1,7 +1,8 @@
 """Small deterministic wheel plant for integration tests, not a TMX physics model."""
 
 import math
-from forza_ai.contracts import WheelState
+import time
+from forza_ai.contracts import ActuationExpired, WheelState
 
 
 class SimulatedAdapter:
@@ -37,3 +38,14 @@ class SimulatedAdapter:
         self.torque = 0.0
         self.closed = True
         self.virtual_state = None
+
+    def set_torque_before(self, torque: float, deadline_ns: int):
+        if type(deadline_ns) is not int or deadline_ns < 0:
+            raise ValueError("deadline_ns must be nonnegative integer nanoseconds")
+        if time.monotonic_ns() >= deadline_ns:
+            self.set_torque(0.0)
+            raise ActuationExpired("simulation command expired before output")
+        self.set_torque(torque)
+        if time.monotonic_ns() >= deadline_ns:
+            self.set_torque(0.0)
+            raise ActuationExpired("simulation output returned after its deadline")

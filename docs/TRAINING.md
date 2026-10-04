@@ -230,8 +230,106 @@ by the synthetic import tests.
 
 A normally closed recorder can report empty segments: it increments the segment
 before enqueueing a frame, and `queue.Full` can drop every frame in that segment,
-including a final resumed segment. Import accepts absent segment IDs only when
-the recorded `dropped` count supplies at least one dropped frame per empty
-segment. Segment IDs must still be ordered and within the declared count. This
+including a final resumed segment. For the original unbuffered schema, absent segment IDs need recorded queue
+drops, subject to the narrow Ctrl+C exception below. Buffered producers use
+their explicit discard counters as described below. Segment IDs must still be ordered and within the declared count. This
 check admits that recorder behavior without inventing samples or accepting an
 unexplained mismatch in completion metadata.
+
+### Original Ctrl+C segment edge and diagnostic-only inspection
+
+The original `8e379da` recorder increments `segment` before processing/enqueueing
+the frame. A `KeyboardInterrupt` during that processing is caught as a normal
+stop, but neither a frame nor a queue-full drop has been counted. Replaying the
+actual historical loop with inert dependencies reproduced one saved segment,
+`segments=2`, `dropped=0`, and normal cleanup. Import therefore permits **at most
+one additional unaccounted trailing segment**, only for the original exact
+metadata-key shape and original CSV columns. Other empty segments still require
+recorded drops. Later/extended producer metadata does not receive this exception;
+its segment semantics must be established from its source. Accepted legacy
+imports report the Ctrl+C caveat in `empty_segment_evidence`.
+
+### Buffered recorder variants (merged source 26f0970)
+
+The producer lineage is now available: `2c4c81e` discards pending frames on stop,
+`0bb45a1` adds yaw/game-clock fields, `82c2e46` adds gear/HUD patches, `4fdefa7`
+adds game-takeover filtering, and `0117f25` adds car identity fields. Strict import
+supports their exact ordered column families, including the sample's 17 columns
+and the merged recorder's 20 columns. This establishes schema semantics, not the
+exact binary/source revision executed for an archive without a recorded hash.
+
+`frames` counts saved rows. Frame IDs count captured entries before pending-buffer
+discards and can have gaps; filenames must exactly match the retained row IDs.
+Those gaps need enough queue-drop or rewind/takeover discard evidence. Stop
+discards cannot explain an earlier frame-ID gap. Opened segments can contain no
+saved rows when their pending frames are discarded. Missing segments must be
+accounted for by the same loss counters without spending a counter twice for
+both earlier missing IDs and a later empty segment. `discarded_at_stop` is a
+**frame count**; `drop_seconds` is a **buffer duration**, not that count.
+Optional `accepted_frame_count` must reconcile with saved rows plus all losses;
+older archives do not need this newer field. Explicit `completed: false`, missing
+images, malformed data, contradictory counters and unknown schemas still fail.
+
+Extra telemetry is preserved in the original CSV, checked for finite/type-correct
+values, and excluded from model inputs. No distance rescaling or car-normalization
+is inferred. Optional `hud/*.png` patches are auxiliary sync diagnostics: an
+archive may omit them entirely, or contain a subset; present patches are validated,
+copied, and fingerprinted. They are never used as road images. Optional
+`capture_timing.csv` is preserved and must cover the saved row IDs. If source
+metadata advertises that sidecar, it must exist. It is not silently promoted to
+certified capture time: training continues to use zero-offset aligned labels and
+conservative rounded-age bounds. New completed/jpeg_quality/measured_capture/
+capture_provenance metadata remains intact in `source_metadata`.
+
+The unchanged `smoke_20261003_152944.zip` (13,689,689 bytes, SHA-256
+`7829b5458609202f8ddd970ed0d789800a1347e775cbb0360234a10f214fbaeb`)
+now passes strict import with **1,988 accepted rows and 9 rounded-age exclusions**.
+It declares two opened segments, one saved segment, no queue drops or rewinds,
+and five discarded-at-stop frames; the source-backed buffering rules account for
+that case. Original source bytes are preserved. This remains one independent
+parent recording; normal training still requires at least two groups. No GPU
+compute, held-out driving result, or model readiness follows from import success.
+
+```bash
+forza-train import-recording SOURCE DEST --expert-mode manual --exclude-sessions config/exclude_sessions.txt
+forza-train validate DATASET
+```
+
+Exclusions are mandatory for normal import and production session loading
+(including train/resume/evaluate and already-imported datasets). A checkout reads
+its `config/exclude_sessions.txt`; an installed wheel uses the bundled policy
+copy. Missing policy files fail closed. Current defaults exclude the parent
+prefixes `20261003_150225` and `20261003_152123`; the supplied `20261003_152944`
+sample is allowed. Checks use source IDs and split groups, including nested
+original metadata, so renaming a folder or an imported artifact does not bypass
+policy. Direct production splitting also checks the identities.
+
+`--exclude-sessions PATH` adds prefixes to mandatory defaults; it never replaces
+them. Checked prefixes are recorded in new import manifests, but production loads
+recheck the current policy rather than trusting that historical list. Updating
+repository exclusions requires updating the bundled `src/forza_ai/data/exclude_sessions.txt`
+copy for wheel distributions; a regression test enforces equality. Diagnostic-only
+read-only inspection remains available for excluded sources, without admitting
+them to production splits. No original recordings are changed or deleted.
+
+`inspect_recording_for_diagnostics(source, expert_mode="manual")` remains an
+explicit read-only fallback for unresolved producer variants. Its results always
+carry `diagnostic_only: true`, cannot enter production splitting, and must not be
+used to manufacture held-out metrics or deployment artifacts. The now-supported
+sample no longer needs that fallback for import; its bounded one-recording GPU
+smoke remains separate from normal multi-group training.
+
+New recordings may declare `producer_schema=record_py_buffered_20_v1` and
+`producer_sha256`. If present, the schema must match the 20-column takeover-buffer
+format and the hash must be 64 lowercase hexadecimal characters. Both fields
+remain optional for old recordings. Imports preserve them as **declared** producer
+identity; syntax validation alone does not prove the executing source's identity.
+
+Archive paths are checked using the raw ZIP member name before host-specific
+`ZipInfo` normalization. Colab extraction rejects literal backslashes by default.
+For a known legacy Windows ZIP, the standalone helper can explicitly use
+`extract_zip(..., allow_legacy_backslashes=True)`; normalization still rejects
+traversal, absolute/drive paths, Windows reserved names, and mixed-separator
+collisions. Import provenance and auxiliary fingerprint paths use `/` on every
+host; newly generated import manifests use LF line endings. Original source
+files are copied unchanged.

@@ -41,7 +41,13 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 
 ## Telemetry
 - Data Out ON, `127.0.0.1:9999`. Packets are 324 bytes (FH4 "dash" layout), ~60/s while driving.
-- Offsets used in check.py: IsRaceOn int @0, CurrentEngineRpm float @16, Speed float m/s @256, Steer s8 @320. **Speed/steer offsets not yet verified while driving.**
+- Offsets: IsRaceOn int @0, TimestampMS u32 @4, CurrentEngineRpm float @16, AngularVelocityY (yaw rate) float @48, Speed float m/s @256, DistanceTraveled float @292, CurrentRaceTime float @308, Gear u8 @319, Steer s8 @320.
+- **Verified while driving (2026-10-03):** speed matches HUD; telemetry Steer tracks the TMX wheel (corr 0.99, ~1 frame later, same sign). Race-time rewind detection and gear/yaw offsets: in use but not yet confirmed on real data.
+
+## Reading the TMX without killing Forza's FFB
+- SDL's **DirectInput** backend acquires FFB wheels exclusively: running a DirectInput reader while Forza runs killed the wheel's FFB until Forza restarted.
+- Read-only code must set `SDL_HINT_DIRECTINPUT_ENABLED=0` and `SDL_HINT_JOYSTICK_RAWINPUT=1` before `SDL_Init`, then poll `SDL_JoystickUpdate` for up to ~3 s until the device appears. Under RawInput the TMX is named "Thrustmaster TMX", vJoy "HID-compliant game controller"; axes a0/a1/a2 are the same as above. Verified: reads with Forza focused, FFB unaffected.
+- `utils/test.py` (old check.py) still uses DirectInput: only run it with Forza closed.
 
 ## Original data collection plan (see current contracts before use)
 - Solo circuit (Rivals/time attack, ghost off if possible), one mid-range B/A-class car, automatic gears, bonnet camera, HUD off, racing line off, lens effects off.
@@ -50,8 +56,11 @@ Hobby physical-AI project: a neural network steers a car in **Forza Horizon 4 (S
 
 ## Status / next
 - Hardware history: Python/VS Code, TMX calibration, FFB test, vJoy + registry flag, Forza wheel layout, Forza FFB reaches vJoy, telemetry packets arrive, HidHide installed with both python.exe paths allowed.
-- Implemented in this repo: offline training/export, actual-recorder import, live crop/mask preprocessing, local PD wheel control, takeover/expiry, LAN inference, foreground checks, telemetry, and simulated/loopback tests. `record.py` is the incoming recorder; its original behavior is preserved.
-- NEXT: user runs the stationary wheel sweep and two-PC fixed-target tests; transfer completed real recordings for training. Physical/native driver behavior and actual LAN/GPU execution remain unverified. Forza game-force replay/blending is a later feature; the current adapter commands only its own steering effect.
+- Implemented in this repo: offline training/export, actual-recorder import, live crop/mask preprocessing, local PD wheel control, takeover/expiry, LAN inference, foreground checks, telemetry, integrated correction recording, wheel re-arm/route buttons, local dashboard, reports, saved profiles/launchers, and simulated/loopback tests.
+- Recorder (`record.py`, reconciled after merge `26f0970`): keeps RawInput, HUD gear patches, the 20-column schema, rewind/game-takeover/stop discard buffering, and noncontiguous frame IDs. Fresh one-shot capture, default 30 FPS, measured rates, host timing sidecar, source schema/hash, writer failure checks and wheel-detach handling are restored. No original recordings are rewritten. The prior 66 ms screen/telemetry measurement came from the older capture path; new capture timing still needs device measurement. Crop: full width, y 330-725, saved 320x66, no masks.
+- Recorded so far (game PC, data/recordings): 152944 (1 lap), 154540 (~19 min, 7 rewinds), 162649 (~2.6 min, 2 rewinds); car 2473 (2016 Audi R8 V10 Plus, S2 963). 150225 and 152123 excluded.
+- Importer now accepts source-backed 12/17/20-column families, validates gap/discard/segment accounting, preserves auxiliary artifacts and original bytes, and enforces `config/exclude_sessions.txt` by default during import and production loading. Renaming folders or supplying an empty additional list cannot bypass exclusions; two independent groups remain required.
+- Verified integration: 484 tests/197 subtests; actual archive `7829b5458609202f8ddd970ed0d789800a1347e775cbb0360234a10f214fbaeb` imports 1,988 accepted/9 ambiguous-age exclusions, raw bytes unchanged. NEXT: Windows isolated checkout repeats validation; obtain a second independent eligible recording for production training and perform authorized hardware/LAN acceptance separately. Game road-force replay remains a later feature.
 
 ## Working rules
 - Test FFB with no game, and vJoy passthrough with no AI. Never debug both at once.

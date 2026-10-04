@@ -2,6 +2,10 @@
 
 The user-selected deployment is:
 
+For daily use, [saved profiles](../configs/README.md) replace repeated long CLI
+commands, and [OPERATIONS.md](OPERATIONS.md) covers wheel re-engagement, the
+dashboard, integrated correction recordings, and run comparisons.
+
 ```text
 Game + TMX PC                              DESKTOP-0HR4O88
 road crop + causal speed  -- LAN request --> model inference
@@ -115,7 +119,9 @@ and keep the game in front. First use shadow mode:
 
 Only one process should own the wheel and listen on Data Out port 9999. Stop a
 separate recorder/old adapter before starting this runtime, or coordinate a
-different configured Data Out port. This runtime is not the dataset recorder.
+different configured Data Out port. Use the runtime's `--record-session` option
+for integrated manual/correction recording without a second device listener;
+see [OPERATIONS.md](OPERATIONS.md).
 
 ```powershell
 python -m forza_ai.runtime --backend windows --inference-host DESKTOP_LAN_IP --capture-config config/capture.json --shadow --duration 30 --takeover-button BUTTON_INDEX --status-csv runs/network-shadow.csv
@@ -138,7 +144,8 @@ Live modes require `ForzaHorizon4.exe` to be the foreground process by default.
 Use `--game-process` only if the actual game EXE differs. Alt-Tabbing disengages
 assistance. After returning to the game, re-engage explicitly; issuing `arm` in
 the terminal gives a five-second window to return to Forza and obtain valid
-input. The check is based on the process EXE, not a matching browser/window title.
+input. Prefer a configured `--arm-button` for re-engagement without leaving the
+game. The check is based on the process EXE, not a matching browser/window title.
 
 Then, while stationary, replace `--shadow` with `--assist` for a small physical
 rightward target from the desktop. The policy waits for valid input during the

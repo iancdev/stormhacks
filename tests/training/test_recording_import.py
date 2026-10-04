@@ -53,6 +53,9 @@ def test_import_preserves_original_labels_images_and_provenance(tmp_path):
     dest = tmp_path / 'imported'
     result = import_recording(source, dest, expert_mode='manual')
     assert result['accepted'] == 8
+    manifest_bytes = (dest / 'metadata.json').read_bytes()
+    assert b'\r\n' not in manifest_bytes
+    assert manifest_bytes == (json.dumps(json.loads(manifest_bytes), indent=2) + '\n').encode('utf-8')
     assert result['split_group'] == 'record.py:drive-001'
     assert result['provenance']['timing']['image_age_bound_ns'] is None
     assert result['provenance']['timing']['time_resolution_ns'] == 100_000
@@ -80,7 +83,7 @@ def test_invalid_or_incomplete_recording_fails_transactionally(tmp_path, case):
     elif case == 'extra':
         (source / 'frames/extra.jpg').write_bytes(b'extra')
     elif case == 'segments':
-        edit_meta(source, lambda m: m.update(segments=3))
+        edit_meta(source, lambda m: m.update(segments=4))
     elif case == 'no-meta':
         (source / 'meta.json').unlink()
     elif case == 'image-size':
@@ -219,7 +222,7 @@ def test_empty_segments_require_dropped_frame_evidence(tmp_path, case, empty_seg
         edit_rows(source, lambda rows: [r.update(segment=str(int(r['segment']) + 1)) for r in rows])
     elif case == 'middle':
         edit_rows(source, lambda rows: [r.update(segment='2') for r in rows if r['segment'] == '1'])
-    edit_meta(source, lambda m: m.update(segments=2 + empty_segments, dropped=empty_segments))
+    edit_meta(source, lambda m: m.update(segments=2 + empty_segments, dropped=empty_segments, completed=True))
     report = import_recording(source, tmp_path / 'valid', expert_mode='manual')
     assert report['accepted'] == 8
     assert report['provenance']['segments'] == 2 + empty_segments
@@ -227,3 +230,256 @@ def test_empty_segments_require_dropped_frame_evidence(tmp_path, case, empty_seg
     with pytest.raises(ValueError, match='empty segments exceed'):
         import_recording(source, tmp_path / 'invalid', expert_mode='manual')
     assert not (tmp_path / 'invalid').exists()
+
+
+def test_original_ctrl_c_can_leave_one_trailing_unqueued_segment(tmp_path):
+    source = recording(tmp_path / 'source')
+    edit_meta(source, lambda m: m.update(segments=3, dropped=0))
+    report = import_recording(source, tmp_path / 'accepted', expert_mode='manual')
+    assert report['accepted'] == 8
+    assert 'KeyboardInterrupt' in report['provenance']['empty_segment_evidence']
+    # The rule is tied to the tracked original metadata shape, not later variants.
+    edit_meta(source, lambda m: m.update(discarded_at_stop=5))
+    with pytest.raises(ValueError, match='empty segments exceed'):
+        import_recording(source, tmp_path / 'unverified-variant', expert_mode='manual')
+
+
+@pytest.mark.parametrize('case', ['two-trailing', 'leading', 'middle', 'modern'])
+def test_interrupt_compatibility_does_not_explain_other_empty_segments(tmp_path, case):
+    source = recording(tmp_path / 'source')
+    edit_meta(source, lambda m: m.update(segments=3, dropped=0))
+    if case == 'two-trailing':
+        edit_meta(source, lambda m: m.update(segments=4))
+    elif case == 'leading':
+        edit_rows(source, lambda rows: [r.update(segment=str(int(r['segment']) + 1)) for r in rows])
+    elif case == 'middle':
+        edit_rows(source, lambda rows: [r.update(segment='2') for r in rows if r['segment'] == '1'])
+    else:
+        edit_meta(source, lambda m: m.update(completed=True))
+    with pytest.raises(ValueError, match='empty segments exceed'):
+        import_recording(source, tmp_path / 'invalid', expert_mode='manual')
+
+
+def test_diagnostic_extended_variant_keeps_failures_and_original_bytes(tmp_path):
+    import hashlib
+    from forza_ai.data.recording import inspect_recording_for_diagnostics
+    source = recording(tmp_path / 'source')
+    edit_meta(source, lambda m: m.update(segments=3, dropped=0, discarded_at_stop=5))
+    labels = source / 'labels.csv'
+    rows = list(csv.DictReader(labels.open()))
+    extras = ['race_time', 'distance', 'yaw_rate', 'game_ms', 'gear']
+    with labels.open('w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=COLUMNS + extras)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(dict(row, race_time='1.000', distance='-37.4', yaw_rate='0.0000', game_ms='100', gear='1'))
+    before = {p.relative_to(source).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+              for p in source.rglob('*') if p.is_file()}
+    with pytest.raises(ValueError, match='columns'):
+        import_recording(source, tmp_path / 'strict', expert_mode='manual')
+    session = inspect_recording_for_diagnostics(source, expert_mode='manual')
+    assert len(session.samples) == 8
+    assert session.provenance['diagnostic_only'] is True
+    assert session.provenance['production_validation_passed'] is False
+    assert len(session.provenance['strict_validation_issues']) == 2
+    assert session.provenance['empty_segment_evidence'] == 'unresolved'
+    assert not (source / 'metadata.json').exists()
+    after = {p.relative_to(source).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in source.rglob('*') if p.is_file()}
+    assert before == after
+    with pytest.raises(ValueError, match='diagnostic-only'):
+        split_sessions([session, session], .25, 7)
+    # Diagnostic scope does not bypass missing files or malformed base data.
+    (source / 'frames/000003.jpg').unlink()
+    with pytest.raises(ValueError, match='missing or extra'):
+        inspect_recording_for_diagnostics(source, expert_mode='manual')
+
+
+def extended_recording(path, *, cars=False, gap=False):
+    source = recording(path)
+    extras = ['race_time', 'distance', 'yaw_rate', 'game_ms', 'gear']
+    if cars:
+        extras += ['car_ordinal', 'car_class', 'car_pi']
+    with (source / 'labels.csv').open(newline='') as handle:
+        rows = list(csv.DictReader(handle))
+    if gap:
+        # Pending frames 3 and 4 were discarded before later rows were saved.
+        for row in reversed(rows[3:]):
+            old = int(row['frame'])
+            row['frame'] = str(old + 2)
+            (source / f'frames/{old:06d}.jpg').rename(source / f'frames/{old + 2:06d}.jpg')
+    with (source / 'labels.csv').open('w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=COLUMNS + extras)
+        writer.writeheader()
+        for row in rows:
+            row.update(race_time='1.000', distance='-37.4', yaw_rate='0.0000', game_ms='100', gear='1')
+            if cars:
+                row.update(car_ordinal='1', car_class='4', car_pi='800')
+            writer.writerow(row)
+    def meta(m):
+        m.update(segments=3, discarded_at_stop=5, drop_seconds=5.0, rewind_button=None,
+                 rewinds=int(gap))
+        if cars:
+            m.update(takeovers=0, discarded_by_rewind_or_takeover=2 if gap else 0)
+        else:
+            m.update(discarded_by_rewind=2 if gap else 0)
+    edit_meta(source, meta)
+    return source
+
+
+@pytest.mark.parametrize('cars', [False, True])
+@pytest.mark.parametrize('gap', [False, True])
+def test_buffered_producer_variants_and_ids(tmp_path, cars, gap):
+    source = extended_recording(tmp_path / 'source', cars=cars, gap=gap)
+    report = import_recording(source, tmp_path / 'out', expert_mode='manual')
+    assert report['accepted'] == 8
+    assert report['provenance']['buffering']['stopped'] == 5
+    assert len(report['provenance']['additional_columns_not_model_inputs']) == (8 if cars else 5)
+    assert (source / 'labels.csv').read_bytes() == (tmp_path / 'out/labels.csv').read_bytes()
+    assert sorted(p.name for p in (source / 'frames').iterdir()) == sorted(p.name for p in (tmp_path / 'out/frames').iterdir())
+    with pytest.raises(ValueError, match='two independent'):
+        split_sessions([load_session(tmp_path / 'out')], .25, 7)
+
+
+@pytest.mark.parametrize('fault', ['missing-image', 'unexplained-gap', 'negative-discard', 'unexplained-segment',
+                                  'double-count', 'no-event', 'bad-extra-value', 'false-completion', 'missing-timing'])
+def test_extended_producer_rejects_unexplained_or_corrupt_data(tmp_path, fault):
+    source = extended_recording(tmp_path / 'source', cars=True, gap=True)
+    if fault == 'missing-image':
+        (source / 'frames/000006.jpg').unlink()
+    elif fault == 'unexplained-gap':
+        edit_meta(source, lambda m: m.update(discarded_by_rewind_or_takeover=0))
+    elif fault == 'negative-discard':
+        edit_meta(source, lambda m: m.update(discarded_at_stop=-1))
+    elif fault == 'unexplained-segment':
+        edit_meta(source, lambda m: m.update(segments=20))
+    elif fault == 'double-count':
+        edit_meta(source, lambda m: m.update(discarded_at_stop=0))
+    elif fault == 'no-event':
+        edit_meta(source, lambda m: m.update(rewinds=0))
+    elif fault == 'bad-extra-value':
+        p = source / 'labels.csv'
+        p.write_text(p.read_text().replace('-37.4', 'nan'))
+    elif fault == 'false-completion':
+        edit_meta(source, lambda m: m.update(completed=False))
+    elif fault == 'missing-timing':
+        edit_meta(source, lambda m: m.update(capture_provenance={'timing_file': 'capture_timing.csv'}))
+    with pytest.raises((ValueError, OSError)):
+        import_recording(source, tmp_path / 'out', expert_mode='manual')
+    assert not (tmp_path / 'out').exists()
+
+
+def test_preserves_optional_hud_and_timing_without_using_as_inputs(tmp_path):
+    source = extended_recording(tmp_path / 'source', cars=True)
+    (source / 'hud').mkdir()
+    Image.new('RGB', (8, 10)).save(source / 'hud/000000.png')
+    timing = 'frame,retrieved_ns\n' + ''.join(f'{i},{i * 1000000}\n' for i in range(8))
+    (source / 'capture_timing.csv').write_text(timing)
+    edit_meta(source, lambda m: m.update(completed=True, jpeg_quality=90, measured_capture={},
+                                        capture_provenance={'timing_file': 'capture_timing.csv'}))
+    report = import_recording(source, tmp_path / 'out', expert_mode='manual')
+    assert report['accepted'] == 8
+    assert report['provenance']['auxiliary_files_preserved'] == ['capture_timing.csv', 'hud/000000.png']
+    for name in report['provenance']['auxiliary_files_preserved']:
+        assert (source / name).read_bytes() == (tmp_path / 'out' / name).read_bytes()
+    assert report['provenance']['timing']['image_age_bound_ns'] is None
+
+
+def test_optional_acquired_counter_reconciles_but_is_not_required(tmp_path):
+    source = extended_recording(tmp_path / 'source', cars=True, gap=True)
+    # 8 saved + 2 rewound + 5 pending at stop.
+    edit_meta(source, lambda m: m.update(accepted_frame_count=15))
+    assert import_recording(source, tmp_path / 'valid', expert_mode='manual')['accepted'] == 8
+    edit_meta(source, lambda m: m.update(accepted_frame_count=14))
+    with pytest.raises(ValueError, match='accepted_frame_count'):
+        import_recording(source, tmp_path / 'invalid', expert_mode='manual')
+
+
+def test_explicit_exclusion_file_uses_original_session_identity(tmp_path):
+    source = extended_recording(tmp_path / 'renamed-folder')
+    rules = tmp_path / 'exclude.txt'
+    rules.write_text('# operator exclusions\ndrive- # excluded parent\n')
+    with pytest.raises(ValueError, match='exclusion prefix'):
+        import_recording(source, tmp_path / 'excluded', expert_mode='manual', exclude_sessions=rules)
+    rules.write_text('different- # unrelated\n')
+    result = import_recording(source, tmp_path / 'accepted', expert_mode='manual', exclude_sessions=rules)
+    assert result['accepted'] == 8
+    assert 'different-' in json.loads((tmp_path / 'accepted/metadata.json').read_text())['exclusion_prefixes_checked']
+
+
+def test_optional_producer_identity_preserved_without_claiming_verification(tmp_path):
+    source = extended_recording(tmp_path / 'source', cars=True)
+    edit_meta(source, lambda m: m.update(producer_schema='record_py_buffered_20_v1', producer_sha256='ab' * 32))
+    result = import_recording(source, tmp_path / 'out', expert_mode='manual')
+    assert result['provenance']['declared_producer_schema'] == 'record_py_buffered_20_v1'
+    assert result['provenance']['declared_producer_sha256'] == 'ab' * 32
+
+
+@pytest.mark.parametrize('fields,cars', [
+    ({'producer_schema': 'unknown'}, True),
+    ({'producer_schema': 'record_py_buffered_20_v1'}, False),
+    ({'producer_sha256': 'A' * 64}, True),
+    ({'producer_sha256': 'a' * 63}, True),
+    ({'producer_sha256': 123}, True),
+])
+def test_invalid_declared_producer_identity_fails(tmp_path, fields, cars):
+    source = extended_recording(tmp_path / 'source', cars=cars)
+    edit_meta(source, lambda m: m.update(fields))
+    with pytest.raises(ValueError, match='producer_'):
+        import_recording(source, tmp_path / 'out', expert_mode='manual')
+
+
+def test_source_directory_named_hud_preserves_timing_sidecar(tmp_path):
+    source = extended_recording(tmp_path / 'hud', cars=True)
+    (source / 'capture_timing.csv').write_text('frame,retrieved_ns\n' + ''.join(f'{i},{i}\n' for i in range(8)))
+    first = import_recording(source, tmp_path / 'first', expert_mode='manual')
+    source.rename(tmp_path / 'renamed')
+    second = import_recording(tmp_path / 'renamed', tmp_path / 'second', expert_mode='manual')
+    assert first == second
+
+
+@pytest.mark.parametrize('identity', ['20261003_150225', '20261003_152123-extra'])
+def test_checked_in_exclusions_apply_without_cli_flag_and_cannot_be_replaced(tmp_path, identity):
+    source = extended_recording(tmp_path / 'unrelated-folder')
+    edit_meta(source, lambda m: m.update(session=identity))
+    empty_rules = tmp_path / 'empty-rules.txt'
+    empty_rules.write_text('# cannot replace mandatory defaults\n')
+    for rules in [None, empty_rules]:
+        with pytest.raises(ValueError, match='exclusion prefix'):
+            import_recording(source, tmp_path / 'out', expert_mode='manual', exclude_sessions=rules)
+    from forza_ai.data.recording import inspect_recording_for_diagnostics
+    assert inspect_recording_for_diagnostics(source, expert_mode='manual').provenance['diagnostic_only']
+
+
+@pytest.mark.parametrize('identity', ['20261003_150225', '20261003_152123'])
+def test_already_imported_excluded_data_rejected_before_training_or_evaluation(tmp_path, identity):
+    from forza_ai.training.engine import load_checkpoint
+    source = extended_recording(tmp_path / 'source')
+    imported = tmp_path / 'data/session'
+    import_recording(source, imported, expert_mode='manual')
+    # Simulate an old import that passed before today's repository policy.
+    metadata = json.loads((imported / 'metadata.json').read_text())
+    metadata['source_metadata']['session'] = identity
+    (imported / 'metadata.json').write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='exclusion prefix'):
+        load_sessions(imported.parent)
+    with pytest.raises(ValueError, match='exclusion prefix'):
+        train(imported.parent, tmp_path / 'run', device='cpu')
+    # Evaluation loads the policy before touching any images/model. Supply only
+    # the fields its loader needs; no compute or fabricated validation metrics.
+    from forza_ai.training import engine
+    from unittest.mock import patch
+    with patch.object(engine, 'load_checkpoint', return_value={'alignment': {
+        'label_offset_ns': 0, 'max_wheel_gap_ns': 50_000_000, 'max_telemetry_age_ns': 100_000_000}}):
+        with pytest.raises(ValueError, match='exclusion prefix'):
+            evaluate('unused', imported.parent)
+    assert not (tmp_path / 'run').exists()
+
+
+def test_packaged_policy_matches_repository_and_missing_policy_fails_closed(tmp_path, monkeypatch):
+    from forza_ai.data import exclusions
+    root = Path(__file__).resolve().parents[2]
+    assert (root / 'config/exclude_sessions.txt').read_bytes() == Path(exclusions.__file__).with_name('exclude_sessions.txt').read_bytes()
+    monkeypatch.setattr(exclusions, 'default_policy_path', lambda: tmp_path / 'missing.txt')
+    with pytest.raises(FileNotFoundError):
+        exclusions.enforce_exclusions('20261003_152944')

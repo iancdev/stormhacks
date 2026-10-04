@@ -38,6 +38,7 @@ class SteeringCommand:
     generated_time_ns: int
     observation_time_ns: int
     valid_until_ns: int
+    inference_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -68,3 +69,7 @@ class ModelObservation:
 
 class ObservationUnavailable(RuntimeError):
     """Expected temporary missing/stale/paused input; inhibit assistance."""
+
+
+class ActuationExpired(RuntimeError):
+    """Native preparation outlived the command's absolute actuation deadline."""

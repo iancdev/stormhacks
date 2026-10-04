@@ -34,11 +34,15 @@ def test_notebook_helpers_match_and_cells_compile():
             compile(''.join(cell['source']), cell['id'], 'exec')
 
 
-@pytest.mark.parametrize('name', ['../escaped', '/absolute', 'C:/drive', 'a\\b', 'a/../../escaped'])
+@pytest.mark.parametrize('name', ['../escaped', '/absolute', 'C:/drive', 'a\\b', '..\\escaped', 'a\\..\\escaped',
+                                  'a/../../escaped', '\\\\server\\share', 'a/CON.txt',
+                                  'a/name.', 'a/name ', 'a/stream:ads', 'a/./b', 'a//b'])
 def test_archive_paths_rejected(tmp_path, name):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w') as archive:
-        archive.writestr(name, 'bad')
+        info = zipfile.ZipInfo('placeholder')
+        info.filename = info.orig_filename = name  # Write exact bytes on every host.
+        archive.writestr(info, 'bad')
     with pytest.raises(ValueError, match='unsafe'):
         extract_zip(stream, tmp_path / 'out')
     assert not (tmp_path / 'out').exists()
@@ -105,3 +109,37 @@ def test_notebook_synthetic_cells_execute_locally(tmp_path):
     exec(cells['evaluate-export'], scope)
     assert scope['EXPORT'] != first_export
     assert (scope['EXPORT'] / 'model.pt').is_file()
+
+
+def test_legacy_backslash_zip_extracts_without_changing_file_bytes(tmp_path):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        info = zipfile.ZipInfo('placeholder')
+        info.filename = info.orig_filename = 'frames\\000001.jpg'
+        archive.writestr(info, b'unchanged payload')
+    extract_zip(stream, tmp_path / 'out', allow_legacy_backslashes=True)
+    assert (tmp_path / 'out/frames/000001.jpg').read_bytes() == b'unchanged payload'
+
+
+def test_mixed_separator_collision_rejected_before_writing(tmp_path):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        for name in ['frames/one.jpg', 'frames\\one.jpg']:
+            info = zipfile.ZipInfo('placeholder')
+            info.filename = info.orig_filename = name
+            archive.writestr(info, b'content')
+    with pytest.raises(ValueError, match='duplicate'):
+        extract_zip(stream, tmp_path / 'out', allow_legacy_backslashes=True)
+    assert not (tmp_path / 'out').exists()
+
+
+@pytest.mark.parametrize('name', ['..\\outside', 'a\\..\\outside', '\\\\host\\share', 'C:\\drive', 'a\\NUL.txt'])
+def test_legacy_normalization_still_rejects_unsafe_names(tmp_path, name):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        info = zipfile.ZipInfo('placeholder')
+        info.filename = info.orig_filename = name
+        archive.writestr(info, b'bad')
+    with pytest.raises(ValueError, match='unsafe'):
+        extract_zip(stream, tmp_path / 'out', allow_legacy_backslashes=True)
+    assert not (tmp_path / 'out').exists()
