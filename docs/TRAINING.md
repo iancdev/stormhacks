@@ -333,3 +333,42 @@ traversal, absolute/drive paths, Windows reserved names, and mixed-separator
 collisions. Import provenance and auxiliary fingerprint paths use `/` on every
 host; newly generated import manifests use LF line endings. Original source
 files are copied unchanged.
+
+## Bounded preprocessing cache
+
+Training now shares a run-local CPU cache between training and validation. The
+cache stores the exact existing float32 image, speed and label tensors; batch
+size (32), model, precision, loss, epoch-derived shuffle and session splits are
+unchanged. `--cache-mib 256` is the default tensor-payload budget;
+`--cache-mib 0` restores uncached loading. Least-recently-used entries are evicted
+when the shared budget fills. If one sample exceeds the budget it is decoded
+normally without being retained. Smaller-than-dataset caches may have limited
+benefit due to eviction; choose a budget that fits your RAM and measurements.
+
+The budget covers retained tensor bytes, not Python metadata, decoder working
+memory, returned sample clones, batches or the PyTorch allocator. Cached tensors
+are copied on return so callers cannot mutate future examples. An allocation
+failure in cache storage/copying releases the cache and falls back to normal
+loading. This cannot protect against OS process termination or a dataset/batch
+that cannot fit in memory even without caching.
+
+Caching is disabled with a warning when `--workers` is nonzero, preserving the
+requested loader behavior without multiplying cache memory across Windows worker
+processes. No GPU/pinned allocation, persistent workers or disk cache is enabled.
+
+Cache identity includes validated content fingerprints, accepted sample paths,
+timestamps, labels and control modes, alignment settings and exact preprocessing.
+Validation and exclusion checks still run before caching. A new run or resumed
+run rebuilds its cache; source recordings must remain immutable during a run.
+The cache budget is saved in the existing training configuration; older format-1
+checkpoints without the field remain loadable. Resume restores the saved budget
+and leaves all model/optimizer/RNG and best-checkpoint recovery semantics intact.
+`evaluate --cache-mib` also accepts an explicit budget; a one-pass standalone
+validation usually has no cache hits, so it defaults to 0 to avoid retention.
+Repeated in-training validation can reuse cached samples within the shared limit.
+
+Use `scripts/benchmark_training_cache.py` for a bounded, full-trainer comparison
+on three independent synthetic fixture groups. Its timings include validation,
+checkpoint writes, initial data validation and cache filling. Synthetic timing
+and numerical parity verify the software path; they do not establish real driving
+accuracy or substitute for held-out human recordings.

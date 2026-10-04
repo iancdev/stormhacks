@@ -43,6 +43,7 @@ def main(argv=None):
     train.add_argument('--validation-fraction', type=float, default=.25)
     train.add_argument('--seed', type=int, default=7)
     train.add_argument('--workers', type=int, default=0)
+    train.add_argument('--cache-mib', type=int, default=256, help='shared CPU preprocessing tensor budget; 0 disables; disabled with workers > 0')
     train.add_argument('--device', default='auto')
     _alignment(train)
     resume = subs.add_parser('resume', help='continue to a total epoch count using saved configuration')
@@ -54,6 +55,7 @@ def main(argv=None):
     evaluate.add_argument('checkpoint', type=Path)
     evaluate.add_argument('data', type=Path)
     evaluate.add_argument('--device', default='cpu')
+    evaluate.add_argument('--cache-mib', type=int, default=0, help='CPU preprocessing tensor budget; 0 disables')
     evaluate.add_argument('--unseen', action='store_true')
     export = subs.add_parser('export', help='export CPU weights and preprocessing metadata')
     export.add_argument('checkpoint', type=Path)
@@ -77,13 +79,13 @@ def main(argv=None):
             from forza_ai.training import engine
             if args.command == 'train':
                 config = engine.TrainConfig(args.batch_size, args.learning_rate,
-                                            args.validation_fraction, args.seed, args.workers)
+                                            args.validation_fraction, args.seed, args.workers, args.cache_mib)
                 engine.train(args.data, args.output, args.epochs, config, _get_alignment(args), device=args.device)
             elif args.command == 'resume':
                 engine.train(args.data, args.checkpoint.parent, args.epochs,
                              device=args.device, resume=args.checkpoint)
             elif args.command == 'evaluate':
-                print(json.dumps(engine.evaluate(args.checkpoint, args.data, args.device, args.unseen), indent=2))
+                print(json.dumps(engine.evaluate(args.checkpoint, args.data, args.device, args.unseen, args.cache_mib), indent=2))
             elif args.command == 'export':
                 print(json.dumps(engine.export(args.checkpoint, args.output), indent=2))
     except (ValueError, OSError, KeyError, TypeError, OverflowError) as error:

@@ -6,12 +6,14 @@ import math
 import os
 from pathlib import Path
 import tempfile
+import warnings
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 from forza_ai.data.dataset import SteeringDataset
+from forza_ai.data.cache import PreprocessingCache
 from forza_ai.data.sessions import Alignment, load_sessions, split_sessions
 from forza_ai.policies.steering_model import Preprocessing, SteeringModel
 
@@ -26,8 +28,11 @@ class TrainConfig:
     validation_fraction: float = 0.25
     seed: int = 7
     workers: int = 0
+    cache_mib: int = 256
 
     def __post_init__(self):
+        if type(self.cache_mib) is not int or self.cache_mib < 0:
+            raise ValueError('cache_mib must be a nonnegative integer')
         if self.batch_size < 1 or self.workers < 0:
             raise ValueError('batch_size must be positive and workers nonnegative')
         if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
@@ -99,13 +104,13 @@ def _metrics(predictions, targets, mean):
             'train_mean_baseline': errors(np.full_like(y, mean))}
 
 
-def evaluate_model(model, sessions, preprocessing, mean, device, batch_size=64):
+def evaluate_model(model, sessions, preprocessing, mean, device, batch_size=64, cache=None, alignment=None):
     model.eval()
     all_predictions, all_targets, by_session = [], [], {}
     with torch.inference_mode():
         for session in sessions:
             predictions, targets = [], []
-            loader = DataLoader(SteeringDataset([session], preprocessing), batch_size=batch_size)
+            loader = DataLoader(SteeringDataset([session], preprocessing, cache, alignment), batch_size=batch_size)
             for image, speed, label in loader:
                 prediction = model(image.to(device), speed.to(device))
                 predictions.extend((prediction.cpu() * preprocessing.angle_scale_deg).tolist())
@@ -168,7 +173,14 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
     if saved:
         best_snapshot = _recover_best(saved, resume)
         atomic_save(best_snapshot, output / 'best.pt')
-    dataset = SteeringDataset(train_sessions, preprocessing)
+    # Never pickle/fork cache contents into per-worker copies. One budget serves
+    # both training and validation when loading in the parent process.
+    cache = None
+    if config.cache_mib and config.workers:
+        warnings.warn('preprocessing cache disabled with workers > 0 to avoid worker copies', RuntimeWarning)
+    elif config.cache_mib:
+        cache = PreprocessingCache(config.cache_mib * 1024 * 1024)
+    dataset = SteeringDataset(train_sessions, preprocessing, cache, alignment)
     mean = float(np.mean([s.angle_deg for session in train_sessions for s in session.samples]))
     for epoch in range(start, epochs):
         # Epoch-derived shuffling gives repeatable continuation, without skipping batches.
@@ -188,7 +200,7 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
             optimizer.step()
             total += float(loss.detach()) * len(label)
             count += len(label)
-        metrics = evaluate_model(model, val_sessions, preprocessing, mean, device, config.batch_size)
+        metrics = evaluate_model(model, val_sessions, preprocessing, mean, device, config.batch_size, cache, alignment)
         rmse = metrics['model']['rmse_deg']
         improved = rmse < best
         best = min(best, rmse)
@@ -219,7 +231,9 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
     return checkpoint
 
 
-def evaluate(checkpoint, data, device='cpu', unseen=False):
+def evaluate(checkpoint, data, device='cpu', unseen=False, cache_mib=0):
+    if type(cache_mib) is not int or cache_mib < 0:
+        raise ValueError('cache_mib must be a nonnegative integer')
     saved = load_checkpoint(checkpoint)
     sessions = load_sessions(data, Alignment(**saved['alignment']))
     if unseen:
@@ -237,7 +251,9 @@ def evaluate(checkpoint, data, device='cpu', unseen=False):
     model = SteeringModel().to(device)
     model.load_state_dict(saved['model_state'])
     return evaluate_model(model, sessions, Preprocessing(**saved['preprocessing']),
-                          saved['train_mean_angle_deg'], device)
+                          saved['train_mean_angle_deg'], device,
+                          cache=PreprocessingCache(cache_mib * 1024 * 1024) if cache_mib else None,
+                          alignment=Alignment(**saved['alignment']))
 
 
 def export(checkpoint, destination):
