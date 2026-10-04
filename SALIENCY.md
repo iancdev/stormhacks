@@ -58,7 +58,7 @@ activation, not an invented heatmap. See also the [NVIDIA explanation](https://d
 - Rendering older than 500 ms is omitted; the client checks original local
   capture age and elapsed receipt age. Dashboard hides expired/unavailable images,
   including a browser expiry timer. Disconnect clears client preview state.
-- Dashboard polls only the latest read-only `/api/saliency` endpoint at up to 20 Hz,
+- Dashboard polls only the latest read-only `/api/saliency` endpoint at up to 60 Hz,
   with one fetch/decode in flight and no duplicate-frame decoding. HTTP and decode
   time count toward the 500 ms capture-age expiry; stale responses never replace
   a fresh image. This presentation ceiling is separate from uncapped server capture.
@@ -154,7 +154,7 @@ this implementation intentionally makes no causal explanation claim.
 
 The former server capture gate was 1 Hz and the browser waited 500 ms after each
 request. Those deliberate limits caused the visibly stepped preview. The new
-configurable capture gate and 50 ms browser cadence remove those bottlenecks.
+configurable capture gate and deadline-based 60 Hz browser cadence remove those bottlenecks.
 Input, activation overlay and prediction always come from the same inference;
 there is no second camera capture or heatmap pasted onto a newer frame.
 The renderer still has one active render and one replaceable pending snapshot.
@@ -181,3 +181,28 @@ baseline dashboard failures were deselected. Chrome fixture QA displayed 20
 updates in one second, max one in-flight request, no console errors or mobile
 overflow, with repeated-frame dedup and delayed-response expiry checks. These
 are synthetic browser tests, not measured racing-PC performance.
+
+
+### Dashboard 30+ Hz follow-up
+
+The browser now targets 60 Hz (16.67 ms start-to-start), subtracting fetch/decode
+work from that interval. Slow responses do not incur another 33 ms delay. There
+is still only one fetch/decode in flight, repeated frames are not decoded again,
+and the 500 ms source-age expiry still includes HTTP/decode time. The server
+settings and model are unchanged by this dashboard-only follow-up.
+
+Chrome 154 on the Mac, three paired synthetic 77,120–77,638-byte PNGs, two-second
+runs, with distinct decoded visible sources sampled by requestAnimationFrame:
+
+| Injected response delay | Desktop viewport | Mobile viewport |
+| --- | ---: | ---: |
+| 8 ms | 59.06 fps | 60.47 fps |
+| 20 ms | 35.34 fps | 34.36 fps |
+| 40 ms | 20.49 fps | Not measured |
+
+The initial displayed frame is included in the short observation window, so the
+60.47 figure is measurement boundary variation around 60 Hz. These are viewport
+sizes in desktop Chrome, not physical mobile hardware or the real racing LAN.
+Max concurrent preview requests remained one; stale delayed responses, duplicate
+frame decoding, console errors and mobile overflow checks passed. Slow networks
+and low source rates can still reduce fresh-frame throughput below 30 fps.

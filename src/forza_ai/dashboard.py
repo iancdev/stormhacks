@@ -461,8 +461,9 @@ async function pollSaliency(){
     }catch(error){clearTimeout(saliencyTimer);clearSaliency('Preview unavailable. Driving status is shown separately.','UNAVAILABLE');}
     finally{
         if(next)URL.revokeObjectURL(next);
-        // 20 Hz presentation ceiling; subtract request/decode time, no overlapping polls.
-        setTimeout(pollSaliency,Math.max(0,50-(performance.now()-started)));
+        // Target 60 Hz with headroom for 30 Hz sources. Work consumes the period;
+        // a slow request starts the next poll immediately, never adds a 33 ms wait.
+        setTimeout(pollSaliency,Math.max(0,1000/60-(performance.now()-started)));
     }
 }
 function pollFrame(){fetch('/api/frame.jpg?t='+Date.now(),{cache:'no-store'}).then(r=>{if(r.status!==200)throw Error('no frame');return r.blob();}).then(blob=>{const img=document.getElementById('liveFrame'),url=URL.createObjectURL(blob),old=img.dataset.url;img.onload=()=>{if(old)URL.revokeObjectURL(old);};img.src=url;img.dataset.url=url;document.getElementById('frameEmpty').hidden=true;}).catch(()=>{document.getElementById('frameEmpty').hidden=false;}).finally(()=>setTimeout(pollFrame,100));}

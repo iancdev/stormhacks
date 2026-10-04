@@ -78,3 +78,22 @@ finally:
 page=_PAGE.replace('__TOKEN__','synthetic-fixture-token-not-a-secret').replace('<body>','<body><div style="padding:14px;text-align:center;background:#47381c;color:#ffe1a3;font:13px system-ui">SIMULATED UI FIXTURE · SYNTHETIC IMAGE · UNTRAINED MODEL · NO HARDWARE</div>')
 (out/'fixture.html').write_text(page)
 print(json.dumps(report,indent=2))
+
+# Detailed synthetic frames exercise realistic PNG/base64/decode costs. They
+# remain paired actual model inputs/overlays from this untrained fixture model.
+stream = []
+preview = ActivationPreview(p, hz=0)
+try:
+    for index in range(3):
+        pixels = np.random.default_rng(index + 20).integers(0, 256, (90, 320, 3), dtype=np.uint8)
+        preview.begin(dict(session='b'*32, request_id=index+1, frame_id=index+1))
+        prediction = p.predict(pixels, 20)
+        snapshot = preview._capture
+        encoded, active = render_preview(snapshot['image'], snapshot['maps'])
+        stream.append(dict(state='ready', age_ms=35, active=active,
+                           prediction=dict(angle_deg=prediction.angle_deg,
+                                           throttle=prediction.throttle, brake=prediction.brake),
+                           png=base64.b64encode(encoded).decode()))
+finally:
+    preview.close()
+(out/'stream-fixtures.json').write_text(json.dumps(stream))
