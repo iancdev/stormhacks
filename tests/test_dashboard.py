@@ -139,9 +139,9 @@ def test_publish_never_waits_for_snapshot_lock(dashboard):
     assert len(dashboard.snapshot()["history"]) == 180
 
 
-def test_loopback_only_and_finite_idempotent_cleanup():
-    for host in ("0.0.0.0", "192.168.1.3", "::", "example.com"):
-        with pytest.raises(ValueError, match="loopback"):
+def test_default_loopback_and_finite_idempotent_cleanup():
+    for host in ("::", "example.com", "bad:8766", "224.0.0.1", "255.255.255.255", 123, None):
+        with pytest.raises(ValueError, match="dashboard host"):
             Dashboard(queue.Queue(), host=host)
     instance = Dashboard(queue.Queue(), host="localhost", port=0)
     instance.start()
@@ -155,3 +155,50 @@ def test_loopback_only_and_finite_idempotent_cleanup():
     assert instance.publish({}) is False
     with pytest.raises(RuntimeError, match="restarted"):
         instance.start()
+
+
+@pytest.mark.parametrize('host', ['0.0.0.0', '192.168.1.3', '169.254.72.151', '127.0.0.1', '::1'])
+def test_explicit_bind_hosts_are_accepted_without_opening_hardware(host):
+    dashboard = Dashboard(queue.Queue(), host=host)
+    assert dashboard._host == host
+    assert dashboard._server is None
+
+
+def test_wildcard_binding_keeps_actual_destination_host_origin_and_token_checks(monkeypatch):
+    # Exercise wildcard configuration, but keep the test listener on loopback.
+    # No test dashboard is exposed on this machine's LAN interfaces.
+    from http.server import ThreadingHTTPServer
+    import http.client
+    real_bind = ThreadingHTTPServer.server_bind
+    seen = []
+    def local_bind(server):
+        seen.append(server.server_address)
+        server.server_address = ('127.0.0.1', server.server_address[1])
+        return real_bind(server)
+    monkeypatch.setattr(ThreadingHTTPServer, 'server_bind', local_bind)
+    dashboard = Dashboard(queue.Queue(), host='0.0.0.0', port=0)
+    dashboard.start()
+    try:
+        assert seen == [('0.0.0.0', 0)]
+        dashboard.publish({'mode':'manual'})
+        assert read(dashboard, '/').status == 200
+        assert post(dashboard, 'arm').status == 202
+        assert dashboard._queue.get_nowait() == 'arm'
+        for headers in ({'Host':'evil.example'}, {'Host':f'0.0.0.0:{dashboard.address[1]}'},
+                        {'Origin':'http://evil.example'}, {'Origin':f'http://0.0.0.0:{dashboard.address[1]}'},
+                        {'X-Forza-Token':'wrong'}, {'Sec-Fetch-Site':'cross-site'}):
+            with pytest.raises(HTTPError) as error:
+                post(dashboard, **headers)
+            assert error.value.code == 403
+        # Duplicate Host is still rejected, not collapsed into an allowlist hit.
+        connection = http.client.HTTPConnection(*dashboard.address, timeout=2)
+        connection.putrequest('GET', '/', skip_host=True)
+        authority = dashboard.url.removeprefix('http://')
+        connection.putheader('Host', authority)
+        connection.putheader('Host', authority)
+        connection.endheaders()
+        assert connection.getresponse().status == 403
+        connection.close()
+        assert dashboard._queue.empty()
+    finally:
+        dashboard.close()

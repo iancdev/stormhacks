@@ -1,8 +1,8 @@
-# StormHacks — Vision-Based Steering Assist
+# StormHacks — Vision-Based Driving Assist
 
-A driving AI for Forza Horizon 4 that learns from human demonstrations and physically steers a Thrustmaster TMX force-feedback wheel. The human controls throttle and brake and can take over steering.
+A driving AI for Forza Horizon 4 that learns from human demonstrations and physically steers a Thrustmaster TMX force-feedback wheel. A versioned driving model can also control throttle and brake through vJoy; steering-only mode retains human pedals. The driver can take over at any time. See [automatic pedals](docs/AUTOMATIC_PEDALS.md) for training and launch commands.
 
-## Initial scope
+## Original steering-first scope
 
 - One car, one repeatable route, consistent camera and weather.
 - Racing line disabled; moderate human-controlled speed.
@@ -17,7 +17,7 @@ A driving AI for Forza Horizon 4 that learns from human demonstrations and physi
 Game/wheel PC: road crop + speed → LAN → Desktop: CNN inference
 Game/wheel PC: physical controller ← LAN ← Desktop: target angle
 Physical controller → TMX motor → measured angle → vJoy → Forza
-Human pedals → vJoy → Forza
+Human pedals or opt-in v2 CNN pedals → vJoy → Forza
 ```
 
 The physical wheel remains in the steering loop. Direct model-to-vJoy steering can serve as a separate software baseline.
@@ -39,12 +39,13 @@ Overtaking, navigation, and reinforcement learning are future extensions.
 
 ## Status
 
-The tested hardware diagnostic is in `utils/test.py`. Training, recorder import, physical control, matching capture, LAN inference, wheel re-engagement, integrated correction recording, a local dashboard, run reports, and saved two-PC profiles are implemented. `record.py` targets 30 fresh FPS by the user's latest preference and reports measured performance. The desktop trains and serves predictions; the game/wheel PC captures input and controls the wheel locally. Real sessions are pending, and actual Windows movement, desktop GPU, and two-PC operation still require acceptance.
+The tested hardware diagnostic is in `utils/test.py`. Training, recorder import, physical control, matching capture, LAN inference, wheel re-engagement, integrated correction recording, a local dashboard, run reports, and saved two-PC profiles are implemented. `record.py` targets 30 fresh FPS by the user's latest preference and reports measured performance. The desktop trains and serves predictions; the game/wheel PC captures input and controls the wheel locally. A first real steering/throttle/brake GPU run is complete; its offline results and limitations are documented below. It has not been activated or demonstrated to drive a lap.
 
 - [Durable delivery plan and ownership](docs/PLAN.md)
 - [Shared recording and model contracts](docs/CONTRACTS.md)
 - [Adapter usage and Windows acceptance](docs/ADAPTER.md)
 - [Training, dataset transfer, and inference](docs/TRAINING.md)
+- [First real steering/throttle/brake training results](docs/DRIVING_BASELINE_RESULTS.md)
 - [Colab notebook](notebooks/train_colab.ipynb)
 - [Primary two-PC setup: desktop training/inference and game/wheel control](docs/TWO_PC_SETUP.md)
 - [Operator controls, dashboard, correction recording, and reports](docs/OPERATIONS.md)

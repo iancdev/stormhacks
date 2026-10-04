@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from forza_ai.data.dataset import SteeringDataset, estimate_cache_bytes
 from forza_ai.data.cache import PreprocessingCache
 from forza_ai.data.sessions import Alignment, load_sessions, split_sessions
-from forza_ai.policies.steering_model import Preprocessing, SteeringModel
+from forza_ai.policies.steering_model import Preprocessing, SteeringModel, DrivingModel
 
 ARCHITECTURE = 'pilotnet_speed_v1'
 FORMAT_VERSION = 1
@@ -30,8 +30,11 @@ class TrainConfig:
     seed: int = 7
     workers: int = 0
     cache_mib: int = 512
+    task: str = "steering"
 
     def __post_init__(self):
+        if self.task not in {"steering", "driving"}:
+            raise ValueError("task must be steering or driving")
         if type(self.cache_mib) is not int or self.cache_mib < 0:
             raise ValueError('cache_mib must be a nonnegative integer')
         if self.batch_size < 1 or self.workers < 0:
@@ -66,8 +69,10 @@ def atomic_save(value, path):
 
 def load_checkpoint(path):
     value = torch.load(path, map_location='cpu', weights_only=True)
-    if value.get('format_version') != FORMAT_VERSION or value.get('architecture') != ARCHITECTURE:
+    if (value.get('format_version'), value.get('architecture')) not in {(1, ARCHITECTURE), (2, 'pilotnet_driving_v2')}:
         raise ValueError('unsupported checkpoint format or architecture')
+    if (value.get('train_config', {}).get('task', 'steering') == 'driving') != (value['format_version'] == 2):
+        raise ValueError('checkpoint task/architecture mismatch')
     Preprocessing(**value['preprocessing'])
     return value
 
@@ -77,14 +82,14 @@ def _recover_best(saved, checkpoint_path):
     snapshot = saved.get('best_checkpoint')
     if snapshot is None:
         # Compatibility with initial v1 files, and with resuming best.pt itself.
-        if saved['history'][-1]['validation']['model']['rmse_deg'] == saved['best_rmse_deg']:
+        if _score(saved['history'][-1]['validation']) == saved.get('best_score', saved['best_rmse_deg']):
             snapshot = {key: value for key, value in saved.items() if key != 'best_checkpoint'}
         else:
             best_path = Path(checkpoint_path).parent / 'best.pt'
             if not best_path.is_file():
                 raise ValueError('legacy checkpoint has no recoverable best.pt; restore the original best checkpoint')
             snapshot = load_checkpoint(best_path)
-    if (snapshot['history'][-1]['validation']['model']['rmse_deg'] != saved['best_rmse_deg']
+    if (_score(snapshot['history'][-1]['validation']) != saved.get('best_score', saved['best_rmse_deg'])
             or snapshot['dataset_fingerprints'] != saved['dataset_fingerprints']
             or snapshot['train_sessions'] != saved['train_sessions']
             or snapshot['validation_sessions'] != saved['validation_sessions']
@@ -92,6 +97,10 @@ def _recover_best(saved, checkpoint_path):
             or snapshot['epoch'] > saved['epoch']):
         raise ValueError('best checkpoint does not match resumed run')
     return deepcopy({key: value for key, value in snapshot.items() if key != 'best_checkpoint'})
+
+
+def _score(metrics):
+    return metrics['model'].get('rmse_normalized', metrics['model']['rmse_deg'])
 
 
 def _metrics(predictions, targets, mean):
@@ -105,7 +114,7 @@ def _metrics(predictions, targets, mean):
             'train_mean_baseline': errors(np.full_like(y, mean))}
 
 
-def _admit_cache(sessions, preprocessing, alignment, cache_mib, workers=0):
+def _admit_cache(sessions, preprocessing, alignment, cache_mib, workers=0, task="steering"):
     budget = cache_mib * 1024 * 1024
     required = None
     reason = 'disabled_by_request'
@@ -114,7 +123,8 @@ def _admit_cache(sessions, preprocessing, alignment, cache_mib, workers=0):
         warnings.warn('preprocessing cache disabled with workers > 0 to avoid worker copies', RuntimeWarning)
     elif budget:
         try:
-            required = estimate_cache_bytes(sessions, preprocessing, alignment)
+            required = (estimate_cache_bytes(sessions, preprocessing, alignment) if task == "steering"
+                        else estimate_cache_bytes(sessions, preprocessing, alignment, task))
         except (MemoryError, RuntimeError) as error:
             if not PreprocessingCache._is_oom(error):
                 raise
@@ -142,21 +152,39 @@ def _admit_cache(sessions, preprocessing, alignment, cache_mib, workers=0):
     return cache
 
 
+def _task_metrics(predictions, targets, mean, driving, preprocessing):
+    if not driving:
+        return _metrics(predictions, targets, mean)
+    p, y = np.asarray(predictions), np.asarray(targets)
+    result = _metrics(p[:, 0], y[:, 0], mean)
+    error = p - y
+    result['model']['rmse_normalized'] = float(np.sqrt(np.mean(
+        (error / np.array([preprocessing.angle_scale_deg, 1, 1])) ** 2)))
+    for i, name in ((1, 'throttle'), (2, 'brake')):
+        result[name] = {'mae': float(np.abs(error[:, i]).mean()),
+                        'rmse': float(np.sqrt(np.mean(error[:, i] ** 2))),
+                        'zero_baseline_mae': float(np.abs(y[:, i]).mean())}
+    return result
+
+
 def evaluate_model(model, sessions, preprocessing, mean, device, batch_size=64, cache=None, alignment=None):
     model.eval()
+    driving = isinstance(model, DrivingModel)
+    task = "driving" if driving else "steering"
     all_predictions, all_targets, by_session = [], [], {}
     with torch.inference_mode():
         for session in sessions:
             predictions, targets = [], []
-            loader = DataLoader(SteeringDataset([session], preprocessing, cache, alignment), batch_size=batch_size)
+            loader = DataLoader(SteeringDataset([session], preprocessing, cache, alignment, task), batch_size=batch_size)
             for image, speed, label in loader:
                 prediction = model(image.to(device), speed.to(device))
-                predictions.extend((prediction.cpu() * preprocessing.angle_scale_deg).tolist())
-                targets.extend((label * preprocessing.angle_scale_deg).tolist())
-            by_session[session.session_id] = _metrics(predictions, targets, mean)
+                scale = torch.tensor([preprocessing.angle_scale_deg, 1, 1]) if driving else preprocessing.angle_scale_deg
+                predictions.extend((prediction.cpu() * scale).tolist())
+                targets.extend((label * scale).tolist())
+            by_session[session.session_id] = _task_metrics(predictions, targets, mean, driving, preprocessing)
             all_predictions.extend(predictions)
             all_targets.extend(targets)
-    result = _metrics(all_predictions, all_targets, mean)
+    result = _task_metrics(all_predictions, all_targets, mean, driving, preprocessing)
     result['sessions'] = by_session
     return result
 
@@ -195,14 +223,14 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
     torch.manual_seed(config.seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-    model = SteeringModel().to(device)
+    model = (DrivingModel() if config.task == "driving" else SteeringModel()).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     start, history, best = 0, [], float('inf')
     best_snapshot = None
     if saved:
         model.load_state_dict(saved['model_state'])
         optimizer.load_state_dict(saved['optimizer_state'])
-        start, history, best = saved['epoch'], saved['history'], saved['best_rmse_deg']
+        start, history, best = saved['epoch'], saved['history'], saved.get('best_score', saved['best_rmse_deg'])
         torch.set_rng_state(saved['torch_rng_state'])
         if device.type == 'cuda' and saved.get('cuda_rng_state'):
             torch.cuda.set_rng_state_all(saved['cuda_rng_state'])
@@ -214,8 +242,8 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
     # Never pickle/fork cache contents into per-worker copies. One budget serves
     # both training and validation when loading in the parent process.
     cache = _admit_cache(train_sessions + val_sessions, preprocessing, alignment,
-                         config.cache_mib, config.workers)
-    dataset = SteeringDataset(train_sessions, preprocessing, cache, alignment)
+                         config.cache_mib, config.workers, config.task)
+    dataset = SteeringDataset(train_sessions, preprocessing, cache, alignment, config.task)
     mean = float(np.mean([s.angle_deg for session in train_sessions for s in session.samples]))
     for epoch in range(start, epochs):
         # Epoch-derived shuffling gives repeatable continuation, without skipping batches.
@@ -228,7 +256,12 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
             image, speed, label = image.to(device), speed.to(device), label.to(device)
             optimizer.zero_grad(set_to_none=True)
             prediction = model(image, speed)
-            loss = torch.nn.functional.mse_loss(prediction, label)
+            if config.task == 'driving':
+                prediction_for_loss = torch.stack((prediction[:, 0], prediction[:, 1] - prediction[:, 2]), dim=1)
+                label_for_loss = torch.stack((label[:, 0], label[:, 1] - label[:, 2]), dim=1)
+                loss = torch.nn.functional.mse_loss(prediction_for_loss, label_for_loss)
+            else:
+                loss = torch.nn.functional.mse_loss(prediction, label)
             if not torch.isfinite(loss):
                 raise ValueError('non-finite training loss')
             loss.backward()
@@ -236,12 +269,13 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
             total += float(loss.detach()) * len(label)
             count += len(label)
         metrics = evaluate_model(model, val_sessions, preprocessing, mean, device, config.batch_size, cache, alignment)
-        rmse = metrics['model']['rmse_deg']
+        rmse = _score(metrics)
         improved = rmse < best
         best = min(best, rmse)
         history.append({'epoch': epoch + 1, 'train_mse_normalized': total / count, 'validation': metrics})
         checkpoint = {
-            'format_version': FORMAT_VERSION, 'architecture': ARCHITECTURE,
+            'format_version': 2 if config.task == 'driving' else FORMAT_VERSION,
+            'architecture': 'pilotnet_driving_v2' if config.task == 'driving' else ARCHITECTURE,
             'epoch': epoch + 1, 'model_state': model.state_dict(),
             'optimizer_state': optimizer.state_dict(), 'preprocessing': preprocessing.to_dict(),
             'alignment': asdict(alignment), 'train_config': asdict(config),
@@ -250,7 +284,8 @@ def train(data, output, epochs=1, config=None, alignment=None, preprocessing=Non
             'dataset_fingerprints': fingerprints, 'train_mean_angle_deg': mean,
             'dataset_groups': {s.session_id: s.group for s in sessions},
             'dataset_provenance': {s.session_id: s.provenance for s in sessions},
-            'best_rmse_deg': best, 'history': history,
+            'best_rmse_deg': (metrics['model']['rmse_deg'] if improved else best_snapshot['best_rmse_deg']),
+            'best_score': best, 'history': history,
             'torch_rng_state': torch.get_rng_state(),
             'cuda_rng_state': torch.cuda.get_rng_state_all() if device.type == 'cuda' else [],
         }
@@ -283,12 +318,13 @@ def evaluate(checkpoint, data, device='cpu', unseen=False, cache_mib=0):
         if any(s.fingerprint != saved['dataset_fingerprints'][s.session_id] for s in sessions):
             raise ValueError('held-out validation data changed')
     device = choose_device(device)
-    model = SteeringModel().to(device)
+    task = saved["train_config"].get("task", "steering")
+    model = (DrivingModel() if task == "driving" else SteeringModel()).to(device)
     model.load_state_dict(saved['model_state'])
     return evaluate_model(model, sessions, Preprocessing(**saved['preprocessing']),
                           saved['train_mean_angle_deg'], device,
                           cache=_admit_cache(sessions, Preprocessing(**saved['preprocessing']),
-                                             Alignment(**saved['alignment']), cache_mib),
+                                             Alignment(**saved['alignment']), cache_mib, task=task),
                           alignment=Alignment(**saved['alignment']))
 
 
@@ -299,7 +335,7 @@ def export(checkpoint, destination):
         raise ValueError('export destination must be empty')
     destination.mkdir(parents=True, exist_ok=True)
     metadata = {
-        'format_version': FORMAT_VERSION, 'architecture': ARCHITECTURE,
+        'format_version': saved['format_version'], 'architecture': saved['architecture'],
         'preprocessing': saved['preprocessing'], 'image_stage': 'road_crop',
         'input': {'image': 'uint8 HWC RGB', 'resize': 'Pillow bilinear',
                   'pixels': 'pixel / 127.5 - 1', 'speed': 'mps / speed_scale_mps'},
@@ -312,6 +348,12 @@ def export(checkpoint, destination):
         'dataset_groups': saved.get('dataset_groups', {}),
         'dataset_provenance': saved.get('dataset_provenance', {}),
     }
+    if saved['format_version'] == 2:
+        metadata['output'] = {'fields': ['angle_deg', 'throttle', 'brake'],
+                              'angle_units': 'physical degrees, right positive',
+                              'pedal_units': 'fraction pressed [0,1]',
+                              'arbitration': 'signed longitudinal; brake-priority expert labels',
+                              'loss': 'equal MSE over angle/angle_scale_deg and signed (throttle-brake)'}
     atomic_save({key: value.cpu() for key, value in saved['model_state'].items()}, destination / 'model.pt')
     (destination / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
     return metadata

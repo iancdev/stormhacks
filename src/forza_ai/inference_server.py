@@ -1,7 +1,9 @@
 """Authenticated LAN model server; start explicitly on the GPU/inference PC."""
 
 import argparse
+from forza_ai.contracts import DrivingPrediction
 import secrets
+import select
 import socket
 import threading
 import time
@@ -22,6 +24,8 @@ class InferenceServer:
 
     def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0):
         self.predictor = predictor
+        self.driving = getattr(predictor, "driving", False) is True
+        self.version = 2 if self.driving else VERSION
         self.host = _ipv4(host)
         self.port = _port(port, allow_zero=True)
         self.timeout_s = _timeout(timeout_s)
@@ -35,6 +39,9 @@ class InferenceServer:
         self._address = None
         self._last_error = None
         self._running = False
+        self._model_ready = threading.Condition()
+        self._job = None
+        self._model_thread = None
 
     @property
     def address(self):
@@ -53,6 +60,9 @@ class InferenceServer:
 
     def start(self):
         with self._lifecycle_lock:
+            if (self._model_thread is not None and self._model_thread.is_alive()
+                    and (self._stop.is_set() or self._thread is None or not self._thread.is_alive())):
+                raise RuntimeError("inference worker is still stopping")
             if self._thread is not None and self._thread.is_alive():
                 if self._stop.is_set():
                     raise RuntimeError("inference server is still stopping")
@@ -71,11 +81,16 @@ class InferenceServer:
                 self._address = listener.getsockname()
                 self._last_error = None
                 self._running = True
+            self._model_thread = threading.Thread(target=self._infer, name="model-inference", daemon=True)
             self._thread = threading.Thread(target=self._serve, args=(listener,),
                                             name="remote-inference", daemon=True)
             try:
+                self._model_thread.start()
                 self._thread.start()
             except BaseException:
+                self._stop.set()
+                with self._model_ready:
+                    self._model_ready.notify_all()
                 listener.close()
                 self._listener = None
                 self._thread = None
@@ -118,33 +133,90 @@ class InferenceServer:
 
     def _serve_client(self, client):
         session = secrets.token_hex(16)
-        _send_message(client, self._key, {"version": VERSION, "kind": "hello", "session": session},
+        _send_message(client, self._key, {"version": self.version, "kind": "hello", "session": session},
                       b"", time.monotonic() + self.timeout_s)
         next_request_id = 1
         while not self._stop.is_set():
             deadline = time.monotonic() + self.timeout_s
             request, payload = _receive_message(client, self._key, deadline)
-            _schema(request, "predict", {"session", "request_id", "nonce", "frame_id", "speed_mps", "width", "height"})
+            _schema(request, "predict", {"session", "request_id", "nonce", "frame_id", "speed_mps", "width", "height"}, self.version)
             if (_session(request["session"]) != session
                     or _identifier(request["request_id"], positive=True) != next_request_id):
                 raise ProtocolError("replayed or incorrectly ordered request")
             frame_id = _identifier(request["frame_id"])
             nonce = _session(request["nonce"])
             speed = _speed(request["speed_mps"])
-            pixels = _decode_png(payload, request["width"], request["height"])
             _remaining(deadline)
             if self._stop.is_set():
                 return
             next_request_id += 1
-            angle = _angle(self.predictor.predict(pixels, speed))
-            response = {"version": VERSION, "kind": "prediction", "session": session,
+            prediction = self._predict(client, payload, request["width"], request["height"], speed, deadline)
+            if self.driving != isinstance(prediction, DrivingPrediction):
+                raise ProtocolError('predictor output does not match protocol version')
+            angle = _angle(prediction.angle_deg if self.driving else prediction)
+            response = {"version": self.version, "kind": "prediction", "session": session,
                         "request_id": request["request_id"], "nonce": nonce,
                         "frame_id": frame_id, "angle_deg": angle}
+            if self.driving:
+                response.update(throttle=prediction.throttle, brake=prediction.brake)
             _send_message(client, self._key, response, b"", deadline)
+
+    def _infer(self):
+        """One model owner, at most one job, never a queue of disconnected clients."""
+        while not self._stop.is_set():
+            with self._model_ready:
+                self._model_ready.wait_for(lambda: self._job is not None or self._stop.is_set())
+                if self._stop.is_set():
+                    return
+                job = self._job
+            try:
+                _remaining(job["deadline"])
+                pixels = _decode_png(job["payload"], job["width"], job["height"])
+                _remaining(job["deadline"])
+                if not self._stop.is_set() and not job["cancelled"].is_set():
+                    job["prediction"] = self.predictor.predict(pixels, job["speed"])
+            except Exception as error:
+                job["error"] = error
+            finally:
+                with self._model_ready:
+                    self._job = None
+                    job["done"].set()
+
+    def _predict(self, client, payload, width, height, speed, deadline):
+        job = dict(payload=payload, width=width, height=height, speed=speed,
+                   deadline=deadline, done=threading.Event(), cancelled=threading.Event())
+        with self._model_ready:
+            if self._job is not None:
+                raise ProtocolError("inference busy; no queued work accepted")
+            self._job = job
+            self._model_ready.notify()
+        try:
+            while not job["done"].wait(min(.01, _remaining(deadline))):
+                if self._stop.is_set():
+                    raise OSError("inference server stopping")
+                # Notice a timed-out client's disconnect while model code is
+                # still running. Accept/authentication can then recover, without
+                # launching another model invocation or keeping its request.
+                readable, _, _ = select.select([client], [], [], 0)
+                if readable:
+                    peek = client.recv(1, socket.MSG_PEEK)
+                    if not peek:
+                        raise OSError("inference client disconnected")
+                    raise ProtocolError("pipelined requests are not supported")
+            _remaining(deadline)
+            if "error" in job:
+                raise job["error"]
+            if "prediction" not in job:
+                raise OSError("inference cancelled")
+            return job["prediction"]
+        finally:
+            job["cancelled"].set()
 
     def close(self):
         with self._lifecycle_lock:
             self._stop.set()
+            with self._model_ready:
+                self._model_ready.notify_all()
             with self._lock:
                 client = self._client
                 self._running = False
@@ -160,8 +232,15 @@ class InferenceServer:
                 self._thread.join(timeout=1.0)
                 if self._thread.is_alive():
                     raise RuntimeError("inference worker is still running; sockets have been closed")
+            if self._model_thread is not None:
+                self._model_thread.join(timeout=1.0)
+                if self._model_thread.is_alive():
+                    raise RuntimeError("inference worker is still running; sockets have been closed")
             self._listener = None
             self._thread = None
+            self._model_thread = None
+            with self._model_ready:
+                self._job = None
             with self._lock:
                 self._address = None
 
@@ -180,20 +259,26 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", default="127.0.0.1", help="numeric LAN IPv4 address; default loopback")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--cpu-threads", type=int, default=4,
+                        help="CPU inference intra-op threads (default 4, measured batch-one setting)")
     parser.add_argument("--timeout", type=float, default=2.0, help="total per-request server I/O deadline, seconds")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--model", help="export directory containing model.pt and metadata.json")
     mode.add_argument("--test-target", type=float, help="explicit fixed angle test; NOT a driving model")
     args = parser.parse_args(argv)
+    if not 1 <= args.cpu_threads <= 1024:
+        parser.error("--cpu-threads must be between 1 and 1024")
     # Check configuration/key before loading a potentially expensive model.
     key = _key_bytes()
     _ipv4(args.bind)
     _port(args.port)
     _timeout(args.timeout)
     if args.model is not None:
-        from forza_ai.policies.predictor import SteeringPredictor
+        import torch
+        from forza_ai.policies.predictor import load_predictor
 
-        predictor = SteeringPredictor(args.model)
+        torch.set_num_threads(args.cpu_threads)
+        predictor = load_predictor(args.model)
     else:
         predictor = _FixedPredictor(args.test_target)
     server = InferenceServer(predictor, args.bind, args.port, key, args.timeout)

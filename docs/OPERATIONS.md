@@ -46,7 +46,7 @@ request while already assisted does not survive a later fault.
 
 ## Live dashboard
 
-`--dashboard-port 8766` serves a loopback-only dashboard at
+`--dashboard-port 8766` serves a dashboard on localhost by default at
 `http://127.0.0.1:8766`. It shows wheel/target/policy angles, source observation
 age, inference duration, control state, intervention count, route markers, and
 recording/transport status. Stale snapshots visibly disable controls. Requests
@@ -68,7 +68,27 @@ request is reported as delivery unconfirmed because the runtime may have queued 
 Keep the game foreground during assisted driving. Inspect the dashboard on a
 second screen without taking focus, or use the physical buttons. Clicking the
 browser causes the foreground guard to disengage AI; an arm request gives you
-time to return to the game. The dashboard is not exposed on the LAN.
+time to return to the game. The default dashboard is not exposed on the LAN.
+
+### Access from another computer
+
+Add `--dashboard-host 0.0.0.0 --dashboard-port 8766` to the existing runtime
+command **on the PC running Forza and the wheel client**. This listens on all
+IPv4 interfaces. Alternatively bind only that PC's specific LAN IPv4 address.
+Open `http://<RACING-PC-LAN-IP>:8766` from the other computer; `0.0.0.0` is a
+listen address, not a browser destination, and the other computer's localhost
+would point at itself. This does not create a dashboard on the inference laptop.
+
+Saved game profiles support `run.dashboard_host` (default `127.0.0.1`) alongside
+`run.dashboard_port`. The existing launcher passes both to the runtime. Adding
+the bind option does not change `manual`, `shadow`, or `assist` engagement mode.
+
+LAN binding makes dashboard status and its existing controls reachable by other
+computers on that network. There is no new login system. Exact Host/Origin and
+CSRF-token checks remain: for wildcard binding, accepted Host/Origin must match
+the actual local destination IP and port of the connection, never an arbitrary
+header value. DNS aliases and wildcard Host/Origin values are not accepted.
+No broad CORS or firewall changes are made by this option.
 
 Local simulation preview (no wheel or dataset):
 
@@ -154,3 +174,40 @@ or USB hardware timestamps. Keep the full original recording directory: the
 legacy importer continues to use its conservative aligned labels, not the new
 timing sidecar. The integrated recorder above supplies the stream-v1 route for
 new correction datasets.
+
+### Latest-frame inference scheduling
+
+Camera policies infer once per successfully processed `(frame_id, capture_timestamp)`.
+The policy worker waits for new frames, caps starts at `--policy-hz`, and retains only
+one latest pending observation while a prediction runs. Slower inference therefore
+reduces the actual inference cadence without accumulating old frames. Capture and
+the 100 Hz local control loop remain independent. Recoverable failures retry at the
+configured cap; successful predictions never refresh an old frame's timestamp or
+command deadline. Invalidation still discards in-flight results.
+
+Run reports and dashboard state include `policy_worker`: unique input frame rate,
+model-call rate (including retries), duplicate publication and superseded-frame
+counts. These rates cover the worker lifetime, whereas `rates` remains a rolling
+window of capture, successful prediction, and control events. This distinguishes
+new visual information from repeated model calls. No stale-input budget is extended.
+
+The inference server has one fixed model worker and one transport worker. PNG
+decode/model execution cannot trap the accept loop after a client disconnects.
+While a model is still busy, another authenticated request is rejected rather than
+queued or run concurrently. Python model execution cannot be forcibly cancelled;
+a hung worker requires an operator restart, and shutdown reports it after closing
+sockets. Client deadlines and re-arm requirements still apply.
+
+`inference_server --cpu-threads 4` is the default for new model-server starts;
+override it after measuring on the deployment machine. This sets PyTorch intra-op
+threads in that server process only. The existing running server is not retuned.
+A short batch-one FP32 trial on the RTX 5080 laptop (64 held-out crops, 8 warm-ups,
+v2 epoch-2 weights) measured CPU threads 1/2/4/default-24 medians of
+1.502/1.183/0.968/1.041 ms including preprocessing, versus CUDA 1.143 ms including
+H2D/model/D2H. Respective p95 values were 1.834/1.395/1.390/1.500/1.622 ms.
+Therefore CPU remains the inference device. This is a short model-stage benchmark,
+not measured game capture or Ethernet latency. A separate 32-request authenticated
+loopback trial using CPU1 measured 2.980 ms median / 3.483 ms p95 including PNG and
+protocol work. Preprocessing, model weights, FP32 precision and control limits are
+unchanged. Raw Windows evidence is `runs/batch1-latency-20261003` in the isolated
+`stormhacks-driving-b678c33` checkout (local evidence commit `8dc6457`).

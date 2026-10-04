@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from forza_ai.contracts import ModelObservation, ObservationUnavailable
+from forza_ai.contracts import ModelObservation, ObservationUnavailable, DrivingPrediction
 
 
 class LiveModelPolicy:
@@ -18,10 +18,13 @@ class LiveModelPolicy:
             raise ValueError("provide exactly one of export_path or predictor")
         if predictor is None:
             # Torch/model loading is unnecessary for placeholder and hardware tests.
-            from forza_ai.policies.predictor import SteeringPredictor
+            from forza_ai.policies.predictor import load_predictor
 
-            predictor = SteeringPredictor(export_path)
+            predictor = load_predictor(export_path)
         self.predictor = predictor
+        self.driving = getattr(predictor, "driving", False) is True
+        if self.driving:
+            self.name = "trained CNN steering and pedal policy"
         self.max_telemetry_age_ns = max_telemetry_age_ns
 
     def predict(self, observation: ModelObservation) -> float:
@@ -44,7 +47,12 @@ class LiveModelPolicy:
         if (not isinstance(pixels, np.ndarray) or pixels.dtype != np.uint8 or pixels.ndim != 3
                 or pixels.shape[2] != 3 or not pixels.shape[0] or not pixels.shape[1]):
             raise ValueError("expected a nonempty uint8 HWC RGB road crop")
-        angle = float(self.predictor.predict(pixels, vehicle.speed_mps))
+        prediction = self.predictor.predict(pixels, vehicle.speed_mps)
+        if self.driving:
+            if not isinstance(prediction, DrivingPrediction):
+                raise ValueError('driving predictor returned a steering-only result')
+            return prediction
+        angle = float(prediction)
         if not math.isfinite(angle):
             raise ValueError("predictor returned a non-finite steering angle")
         return angle

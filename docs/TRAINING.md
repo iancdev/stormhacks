@@ -1,6 +1,8 @@
 # Training pipeline
 
-This pipeline learns physical wheel angle from RGB road crops and speed. Synthetic
+This pipeline learns physical wheel angle from RGB road crops and speed.
+`train --task driving` also learns acceleration/braking with v2 exports; see
+[AUTOMATIC_PEDALS.md](AUTOMATIC_PEDALS.md) for the complete training-to-vJoy workflow. Synthetic
 fixtures verify software execution only. There is no trained driving policy or
 real-world driving-quality result yet.
 
@@ -173,7 +175,7 @@ forza-train train /path/to/dataset /path/to/run --device cuda --epochs 10
 On Windows the same commands accept quoted Windows paths. Only the normal
 training dependencies are needed; the importer does not import the recorder,
 OpenCV, wheel drivers, or other Windows hardware packages. `--expert-mode manual`
-declares that the entire source recording contains human steering demonstrations.
+declares that the entire source recording contains human steering and pedal demonstrations.
 Do not use it for AI-generated steering; this recorder does not log control mode.
 Source files are never edited and an existing destination is never overwritten.
 

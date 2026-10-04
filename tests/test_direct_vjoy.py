@@ -70,3 +70,39 @@ def test_motor_mode_still_forwards_measured_wheel_only():
     assert summary["max_abs_torque"] > 0.0
     assert all(abs(w - 5.0) > 1e-9 or w == adapter.angle for w in adapter.writes[:1])
     assert max(adapter.writes) < 5.0 + 1.0            # vJoy shows the physical wheel, not the target
+
+
+def test_steering_only_direct_output_uses_native_deadline_and_restores_human_on_expiry():
+    from forza_ai.contracts import ActuationExpired
+    class ExpiringAdapter(RecordingAdapter):
+        deadlines = 0
+        def write_virtual_state_before(self, state, deadline_ns, *, physical_pedals=False):
+            assert physical_pedals
+            self.deadlines += 1
+            assert deadline_ns > 0
+            raise ActuationExpired("native preparation stalled")
+    adapter = ExpiringAdapter()
+    result = run(adapter, FixedAnglePolicy(5), duration=.15, assist=True, direct_vjoy=True)
+    assert adapter.deadlines == 1
+    assert result["mode"] == ControlMode.FAULT.value
+    assert result["reason"] == "actuation_deadline_expired"
+    assert adapter.writes[-1] == adapter.angle == 0
+    assert all(t == 0 for t in adapter.torques)
+
+
+def test_deadline_writer_preserves_human_overlapping_pedals_only_when_explicit():
+    import time
+    import pytest
+    from forza_ai.contracts import WheelState
+    from test_hardware import Rig
+    rig = Rig()
+    adapter = rig.adapter()
+    try:
+        sample = WheelState(time.monotonic_ns(), 0, .4, .3)
+        with pytest.raises(ValueError, match="invalid driving"):
+            adapter.write_virtual_state_before(sample, time.monotonic_ns() + 1_000_000_000)
+        adapter.write_virtual_state_before(sample, time.monotonic_ns() + 1_000_000_000,
+                                           physical_pedals=True)
+        assert rig.virtual_axes[0x31] < 32768 and rig.virtual_axes[0x32] < 32768
+    finally:
+        adapter.close()

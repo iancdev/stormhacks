@@ -371,7 +371,7 @@ def test_doctor_optional_artifact_load_is_explicit(tmp_path, monkeypatch):
     monkeypatch.setenv("FORZA_LINK_KEY", "not-output")
     path = artifact(tmp_path)
     calls = []
-    fake_predictor = SimpleNamespace(SteeringPredictor=lambda model_path: calls.append(model_path))
+    fake_predictor = SimpleNamespace(load_predictor=lambda model_path: calls.append(model_path))
     monkeypatch.setitem(launch.sys.modules, "forza_ai.policies.predictor", fake_predictor)
     assert launch.doctor_report("desktop")["model"] is None
     assert not calls
@@ -396,3 +396,37 @@ def test_windows_launchers_use_argument_arrays_and_no_policy_changes():
         assert "& $taskPython @taskArgs" in script
         assert "Invoke-Expression" not in script and "Set-ExecutionPolicy" not in script
         assert "New-NetFirewallRule" not in script and "$env:FORZA_LINK_KEY" not in script
+
+
+def test_driving_profile_flags(tmp_path, game):
+    game['control'] = {'auto_pedals': True, 'direct_vjoy': True, 'pedal_override': .1}
+    plan = launch.build_plan(save(tmp_path, game), assist=True, run_id='drive')
+    assert {'--auto-pedals', '--direct-vjoy', '--assist'} <= set(plan.argv)
+    assert value_after(plan, '--pedal-override') == '0.1'
+    assert '--shadow' not in plan.argv
+
+
+def test_v2_model_profile(tmp_path, desktop):
+    path = artifact(tmp_path)
+    meta = json.loads((path / 'metadata.json').read_text())
+    meta.update(format_version=2, architecture='pilotnet_driving_v2')
+    (path / 'metadata.json').write_text(json.dumps(meta))
+    desktop['policy'] = {'kind': 'model', 'model_path': str(path)}
+    assert '--model' in launch.build_plan(save(tmp_path, desktop), run_id='v2').argv
+
+
+@pytest.mark.parametrize('host', ['0.0.0.0', '192.168.1.3', '169.254.72.151'])
+def test_dashboard_bind_host_profile(tmp_path, game, host):
+    game['run'].update(dashboard_port=8766, dashboard_host=host)
+    plan = launch.build_plan(save(tmp_path, game), run_id='dashboard-host')
+    assert value_after(plan, '--dashboard-host') == host
+    assert '--shadow' in plan.argv and '--assist' not in plan.argv
+
+
+def test_dashboard_profile_host_default_and_invalid_hosts(tmp_path, game):
+    game['run']['dashboard_port'] = 8766
+    assert value_after(launch.build_plan(save(tmp_path, game), run_id='default'), '--dashboard-host') == '127.0.0.1'
+    for host in ['http://192.168.1.3', 'evil.example', '224.0.0.1', '255.255.255.255', None]:
+        game['run']['dashboard_host'] = host
+        with pytest.raises(launch.ProfileError, match='dashboard host'):
+            launch.build_plan(save(tmp_path, game), run_id='invalid')
