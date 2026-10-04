@@ -60,16 +60,36 @@ def flags_for(rows, before_end_s=3.0):
     return flags, deg, ts, k, v
 
 
-def segment_edges(rows, before_end_s=3.0, after_start_s=3.0):
-    """Last/first seconds of every segment. Ends: mistakes often start before the rewind's 5 s
-    window, and the session may end in a crash. Starts: lap banners and the car settling."""
+def segment_edges(rows, before_end_s=3.0, after_start_s=3.0, step_s=2.0, margin_s=2.0,
+                  trouble_deg=90.0, trouble_kmh=60.0):
+    """Last/first seconds of every segment. Ends: mistakes often start before the rewind's
+    window, and the session may end in a crash. Starts: lap banners and the car settling.
+
+    The end cut is adaptive: from ``before_end_s`` it steps back ``step_s`` at a time while
+    the stretch just before it still shows trouble (wheel past ``trouble_deg`` or speed
+    under ``trouble_kmh``), then adds ``margin_s``. A long off-road episode before a reset
+    is cut back to where driving was still normal.
+    """
     t = np.array([float(r["t"]) for r in rows])
     seg = np.array([r["segment"] for r in rows])
+    deg = np.abs(np.array([float(r["steer_deg"]) for r in rows]))
+    kmh = np.array([float(r["speed_mps"]) * 3.6 if r.get("speed_mps", "") != "" else np.inf for r in rows])
     out = np.zeros(len(rows), bool)
     for s in np.unique(seg):
         idx = np.where(seg == s)[0]
         ts = t[idx]
-        out[idx] = (ts > ts[-1] - before_end_s) | (ts < ts[0] + after_start_s)
+        cut = ts[-1] - before_end_s
+        extended = False
+        while cut > ts[0]:
+            before = (ts >= cut - step_s) & (ts < cut)
+            if not before.any() or not (deg[idx][before].max() > trouble_deg
+                                        or kmh[idx][before].min() < trouble_kmh):
+                break
+            cut -= step_s
+            extended = True
+        if extended:
+            cut -= margin_s
+        out[idx] = (ts > cut) | (ts < ts[0] + after_start_s)
     return out
 
 
@@ -147,10 +167,14 @@ def main():
         rt = [rows[i]["race_time"] for i in (idx[0], idx[-1])]
         print(f"  {s:>3s}: {len(idx) / 30:6.1f} s, race clock {rt[0]} -> {rt[1]}, "
               f"{int(any_flag[idx].sum())} flagged")
-        first = [tile(session, rows[i], f"seg {s} start  {deg[i]:+.0f} deg") for i in idx[:1]]
-        last = [tile(session, rows[i], f"seg {s} end-{(idx[-1] - i) / 30:.1f}s  {deg[i]:+.0f} deg")
-                for i in np.linspace(max(idx[0], idx[-1] - 60), idx[-1], 4).astype(int)]
-        sheet.append(tile_row(first + last))
+        first = [tile(session, rows[i], f"seg {s} start (cut)  {deg[i]:+.0f} deg") for i in idx[:1]]
+        # The last frame that IS kept before the break: it should look like normal driving.
+        kept = [i for i in idx if not any_flag[i]]
+        last_kept = [tile(session, rows[kept[-1]], f"seg {s} LAST KEPT end-{(idx[-1] - kept[-1]) / 30:.0f}s "
+                                                   f"{deg[kept[-1]]:+.0f} deg")] if kept else []
+        last = [tile(session, rows[i], f"seg {s} end-{(idx[-1] - i) / 30:.1f}s (cut)  {deg[i]:+.0f} deg")
+                for i in np.linspace(max(idx[0], idx[-1] - 60), idx[-1], 3).astype(int)]
+        sheet.append(tile_row(first + last_kept + last))
 
     flagged = np.where(any_flag)[0]
     if len(flagged):
