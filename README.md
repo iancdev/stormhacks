@@ -36,7 +36,6 @@ An end-to-end driving AI for **Forza Horizon 4**. A PilotNet-style CNN watches t
 | Game data | **Forza Data Out** UDP telemetry (speed, gear, race clock, distance, yaw rate, steer) |
 | Networking | Authenticated TCP (HMAC with a shared key) between the game PC and the inference PC |
 | Operator tools | Live browser dashboard (AI view, intended path HUD, latency and control traces), saved JSON launch profiles, PowerShell launchers, run reports |
-| Voice co-pilot (optional) | **Google Gemini** (`google-genai`) + `sounddevice`: "APEX, speed it up a bit" makes bounded tuning changes |
 | Analytics (optional) | **Tiger Data** (Postgres + TimescaleDB) via `psycopg`, charts with matplotlib |
 | Testing | pytest, a simulated wheel backend and loopback network tests (no hardware needed) |
 
@@ -51,7 +50,7 @@ An end-to-end driving AI for **Forza Horizon 4**. A PilotNet-style CNN watches t
 | `src/forza_ai/inference_server.py` | LAN inference server for exported models |
 | `src/forza_ai/control/`, `hardware/` | PD steering controller, SDL/vJoy/Windows device backends |
 | `src/forza_ai/dashboard.py`, `launch.py` | Browser dashboard, profile launcher (`forza-launch`) |
-| `src/forza_ai/voice.py`, `analytics/` | Gemini voice co-pilot, Tiger Data analytics (`forza-analytics`) |
+| `src/forza_ai/analytics/` | Tiger Data analytics (`forza-analytics`) |
 | `configs/`, `config/` | Launch profile examples, capture config (`config/capture.json`) |
 | `scripts/` | `start-game.ps1`, `start-desktop.ps1`, wheel tests, Colab helpers |
 | `utils/test.py` | Original hardware diagnostic (DirectInput: only run with Forza closed) |
@@ -86,7 +85,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[hardware]"
 ```
 
-Optional extras: `analytics` (Tiger Data), `voice` (Gemini), `test` (pytest). On the desktop, check CUDA with `python -c "import torch; print(torch.cuda.is_available())"`; if it prints `False`, install a CUDA build from the [PyTorch selector](https://pytorch.org/get-started/locally/).
+Optional extras: `analytics` (Tiger Data), `test` (pytest). On the desktop, check CUDA with `python -c "import torch; print(torch.cuda.is_available())"`; if it prints `False`, install a CUDA build from the [PyTorch selector](https://pytorch.org/get-started/locally/).
 
 ### 2. Configure the game PC (one time)
 
@@ -148,11 +147,11 @@ Game PC: start in `--shadow` (predictions only, no AI torque), then switch to `-
 python -m forza_ai.runtime --backend windows --inference-host INFERENCE_PC_IP --capture-config config/capture.json --takeover-button SDL_INDEX --arm-button OTHER_SDL_INDEX --shadow --interactive --duration 0 --dashboard-port 8080
 ```
 
-Add `--auto-pedals --assist` to let a driving model work the pedals. Add `--record-session runs/session-001` to save takeover corrections for DAgger, or `--voice` for the Gemini co-pilot. Instead of long commands, use the saved profiles and launchers in [configs/README.md](configs/README.md): `.\scripts\start-game.ps1 -Profile .\configs\game.local.json`.
+Add `--auto-pedals --assist` to let a driving model work the pedals. Add `--record-session runs/session-001` to save takeover corrections for DAgger. Instead of long commands, use the saved profiles and launchers in [configs/README.md](configs/README.md): `.\scripts\start-game.ps1 -Profile .\configs\game.local.json`.
 
 ## Status
 
-Implemented: recording, import and review; training and export (steering-only and steering + pedals); live capture; LAN inference; the 100 Hz wheel controller with takeover and expiry; integrated correction recording; the dashboard, reports, profiles and launchers; the voice co-pilot; and analytics. Software tests cover the simulated wheel, loopback networking and failure paths. Real-world performance depends on hardware tuning and the recordings available; see the results docs below.
+Implemented: recording, import and review; training and export (steering-only and steering + pedals); live capture; LAN inference; the 100 Hz wheel controller with takeover and expiry; integrated correction recording; the dashboard, reports, profiles and launchers; and analytics. Software tests cover the simulated wheel, loopback networking and failure paths. Real-world performance depends on hardware tuning and the recordings available; see the results docs below.
 
 ## Docs
 
