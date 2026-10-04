@@ -52,12 +52,13 @@ def test_wake_word():
 
 def test_keyword_brain_scales_with_wording():
     settings = tuning().snapshot()
-    small = KeywordBrain().interpret("speed it up a bit", settings)
-    plain = KeywordBrain().interpret("go faster", settings)
+    small = KeywordBrain().interpret(settings, text="APEX, speed it up a bit")
+    plain = KeywordBrain().interpret(settings, text="Apex go faster")
     assert small["action"] == plain["action"] == "tune"
     assert 0 < small["adjustments"][0]["value"] < plain["adjustments"][0]["value"]
-    assert KeywordBrain().interpret("stop, I've got it", settings)["action"] == "take_over"
-    assert KeywordBrain().interpret("what a view", settings)["action"] == "answer"
+    assert KeywordBrain().interpret(settings, text="APEX stop, I've got it")["action"] == "take_over"
+    assert KeywordBrain().interpret(settings, text="APEX what a view")["action"] == "answer"
+    assert KeywordBrain().interpret(settings, text="go faster")["action"] == "ignore"        # no wake word
 
 
 def test_segmenter_finds_speech_between_silence():
@@ -73,7 +74,7 @@ def test_segmenter_finds_speech_between_silence():
 
 def test_assistant_round_trip_and_takeover():
     t, events = tuning(), queue.Queue()
-    assistant = VoiceAssistant(None, KeywordBrain(), log=lambda *_: None)
+    assistant = VoiceAssistant(KeywordBrain(), log=lambda *_: None)
     assistant._events, assistant._tuning = events, t
     import threading
 
@@ -81,10 +82,10 @@ def test_assistant_round_trip_and_takeover():
         event = events.get(timeout=2)
         event[2].put(t.apply(event[1]))
     threading.Thread(target=loop, daemon=True).start()
-    assert assistant.handle_text("Apex, faster please")["action"] == "tune"
+    assert assistant.handle(text="Apex, faster please")["action"] == "tune"
     assert t.throttle_cap > 0.7
-    assert assistant.handle_text("no wake word here") is None
-    assistant.handle_text("APEX stop")
+    assert assistant.handle(text="faster, no wake word here") is None
+    assistant.handle(text="APEX stop")
     assert events.get_nowait() == "manual"
 
 
@@ -125,24 +126,40 @@ def test_runtime_steer_gain_tune_reaches_controller():
     assert max(abs(s.angle_deg) for _, s in a.writes) > 13          # 10 deg x 1.4 (step-limited from 1.0)
 
 
-def test_claude_brain_request_and_parsing():
+def test_gemini_brain_request_and_parsing():
     from types import SimpleNamespace
-    from forza_ai.voice import ClaudeBrain
+    from forza_ai.voice import GeminiBrain
     sent = {}
 
-    class Messages:
+    class Interactions:
         def create(self, **kwargs):
             sent.update(kwargs)
-            block = SimpleNamespace(type="tool_use", name="adjust_driving", input={
+            step = SimpleNamespace(type="function_call", name="adjust_driving", arguments={
+                "heard": "APEX, speed it up a bit",
                 "adjustments": [{"parameter": "throttle_cap", "mode": "change", "value": 0.05}],
                 "spoken_reply": "Pushing a bit harder."})
-            return SimpleNamespace(content=[block])
+            return SimpleNamespace(steps=[SimpleNamespace(type="thought"), step])
 
-    brain = ClaudeBrain.__new__(ClaudeBrain)
-    brain.client, brain.model, brain.name = SimpleNamespace(messages=Messages()), "m", "test"
-    decision = brain.interpret("can you speed it up a bit", {"throttle_cap": 0.7, "steer_gain": 1.6})
-    assert decision == {"action": "tune", "reply": "Pushing a bit harder.",
+    brain = GeminiBrain.__new__(GeminiBrain)
+    brain.client, brain.model, brain.name, brain._fast = SimpleNamespace(interactions=Interactions()), "m", "t", True
+    audio = np.zeros(16000, np.int16)
+    decision = brain.interpret({"throttle_cap": 0.7, "steer_gain": 1.6}, audio=audio)
+    assert decision == {"action": "tune", "heard": "APEX, speed it up a bit", "reply": "Pushing a bit harder.",
                         "adjustments": [{"parameter": "throttle_cap", "mode": "change", "value": 0.05}]}
-    enum = sent["tools"][0]["input_schema"]["properties"]["adjustments"]["items"]["properties"]["parameter"]["enum"]
+    assert sent["input"][1]["type"] == "audio" and sent["input"][1]["mime_type"] == "audio/wav"
+    enum = sent["tools"][0]["parameters"]["properties"]["adjustments"]["items"]["properties"]["parameter"]["enum"]
     assert enum == ["steer_gain", "throttle_cap"]                    # only this run's settings
-    assert "throttle_cap = 0.7" in sent["system"] and sent["tool_choice"] == {"type": "any"}
+    assert "throttle_cap = 0.7" in sent["system_instruction"] and "APEX, ..." in sent["system_instruction"]
+    assert sent["generation_config"]["tool_choice"] == "any" and sent["store"] is False
+
+
+def test_gemini_ignore_means_no_event():
+    from types import SimpleNamespace
+    class Brain:
+        name = "stub"
+        def interpret(self, settings, **_):
+            return {"action": "ignore", "heard": "nice pass", "adjustments": [], "reply": ""}
+    events = queue.Queue()
+    assistant = VoiceAssistant(Brain(), log=lambda *_: None)
+    assistant._events, assistant._tuning = events, tuning()
+    assert assistant.handle(audio=np.zeros(8000, np.int16)) is None and events.empty()

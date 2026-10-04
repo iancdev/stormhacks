@@ -1,21 +1,23 @@
-"""APEX voice co-pilot: "APEX, speed it up a bit" -> a bounded live tuning change.
+"""APEX voice co-pilot: "APEX, speed it up a bit" -> a bounded live tuning change, via Gemini.
 
 Pipeline (all off the control thread):
   microphone -> utterance (energy VAD, or hold a wheel push-to-talk button)
-             -> ElevenLabs speech-to-text -> wake word check ("APEX ...")
-             -> Claude tool call -> ("tune", adjustments, reply) on the runtime's event queue
+             -> ONE Gemini call with the audio clip + function tools: Gemini hears the speech,
+                checks it is addressed to APEX and picks adjust_driving / take_over / answer / ignore
+             -> ("tune", adjustments, reply) on the runtime's event queue
              -> the control loop applies it through forza_ai.tuning (ranges + step limits)
-             -> spoken confirmation (ElevenLabs text-to-speech), or console only.
+             -> spoken confirmation with Gemini text-to-speech (or console only).
 
 The voice path can only change driving-style settings or hand control BACK to the human; it can
-never arm/engage the AI. Without ANTHROPIC_API_KEY a small keyword parser is used instead of Claude.
+never arm/engage the AI. Needs GEMINI_API_KEY (Google AI Studio).
 
 Try it without the game:
-  python -m forza_ai.voice --text "APEX, speed it up a bit"     # parsing only, no mic/STT
-  python -m forza_ai.voice --listen                              # mic + STT + parsing, prints results
+  python -m forza_ai.voice --text "APEX, speed it up a bit"     # Gemini (or keywords without a key)
+  python -m forza_ai.voice --listen                              # mic + Gemini, prints results
 """
 
 import argparse
+import base64
 import io
 import json
 import os
@@ -31,10 +33,10 @@ from forza_ai.tuning import PARAMETERS
 
 SAMPLE_RATE = 16_000
 BLOCK = 480                                     # 30 ms
-ELEVENLABS = "https://api.elevenlabs.io/v1"
-ANTHROPIC = "https://api.anthropic.com"         # explicit: never inherit a proxy base URL from the env
-DEFAULT_MODEL = "claude-haiku-4-5"              # fastest Claude; a command should land within a second or two
-DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"       # ElevenLabs premade "Rachel"; override with ELEVENLABS_VOICE_ID
+DEFAULT_MODEL = "gemini-3.8-flash"
+TTS_MODEL = "gemini-3.8-flash-lite-tts"         # the fast TTS model, for a quick spoken confirmation
+TTS_RATE = 24_000
+TTS_VOICE = "Kore"
 WAKE = re.compile(r"\b(apex|a\s?pex|apecs|apex's|ape\s?x|aypex|a\s?packs)\b[\s,.!?:;-]*", re.I)
 
 
@@ -88,37 +90,6 @@ def strip_wake(text, required=True):
     return text[match.end():].strip() or None
 
 
-# ---------------------------------------------------------------- speech services
-
-class ElevenLabsSTT:
-    def __init__(self, api_key, model=None, timeout=8.0):
-        import httpx
-        self.client = httpx.Client(timeout=timeout, headers={"xi-api-key": api_key})
-        self.model = model or os.environ.get("ELEVENLABS_STT_MODEL", "scribe_v1")
-
-    def transcribe(self, samples):
-        response = self.client.post(f"{ELEVENLABS}/speech-to-text",
-                                    data={"model_id": self.model, "language_code": "en"},
-                                    files={"file": ("speech.wav", wav_bytes(samples), "audio/wav")})
-        response.raise_for_status()
-        return response.json().get("text", "").strip()
-
-
-class ElevenLabsTTS:
-    def __init__(self, api_key, voice_id=None, timeout=8.0):
-        import httpx
-        self.client = httpx.Client(timeout=timeout, headers={"xi-api-key": api_key})
-        self.voice_id = voice_id or os.environ.get("ELEVENLABS_VOICE_ID", DEFAULT_VOICE_ID)
-
-    def say(self, text):
-        import sounddevice
-        response = self.client.post(f"{ELEVENLABS}/text-to-speech/{self.voice_id}",
-                                    params={"output_format": "pcm_16000"},
-                                    json={"text": text, "model_id": "eleven_flash_v2_5"})
-        response.raise_for_status()
-        sounddevice.play(np.frombuffer(response.content, dtype=np.int16), SAMPLE_RATE, blocking=True)
-
-
 # ---------------------------------------------------------------- understanding
 
 def _settings_text(settings):
@@ -131,9 +102,10 @@ def _settings_text(settings):
 
 
 SYSTEM = """You are APEX, the voice co-pilot of an AI that drives a car in Forza Horizon 4. The human \
-speaks to you while the AI drives. Turn each request into a tool call. You can only adjust the \
-driving-style settings listed below, or hand control back to the human; you can never start the AI.
-
+speaks to you while the AI drives; game audio may be in the background. Always answer with exactly \
+one tool call. You can only adjust the driving-style settings listed below, or hand control back to \
+the human; you can never start the AI.
+{wake}
 Current settings (only these are adjustable in this run):
 {settings}
 
@@ -144,58 +116,105 @@ Guidance:
 - An explicit number ("speed limit 150", "throttle 80 percent" = 0.8) -> mode "set". Relative requests -> mode "change".
 - "Stop", "I've got it", "take over", "let me drive" -> take_over.
 - Questions about the settings, or unclear requests -> answer, briefly.
-- spoken_reply: at most 10 words, no settings jargon."""
+- heard: what the human said, verbatim. spoken_reply: at most 10 words, no settings jargon."""
 
-TOOLS = [
-    {"name": "adjust_driving",
-     "description": "Change one or more driving-style settings of the AI driver.",
-     "input_schema": {"type": "object", "properties": {
-         "adjustments": {"type": "array", "items": {"type": "object", "properties": {
-             "parameter": {"type": "string", "enum": sorted(PARAMETERS)},
-             "mode": {"type": "string", "enum": ["set", "change"]},
-             "value": {"type": "number", "description": "new value (set) or signed amount (change)"}},
-             "required": ["parameter", "mode", "value"]}},
-         "spoken_reply": {"type": "string"}},
-         "required": ["adjustments", "spoken_reply"]}},
-    {"name": "take_over",
-     "description": "Disengage the AI immediately and give the car back to the human driver.",
-     "input_schema": {"type": "object", "properties": {"spoken_reply": {"type": "string"}},
-                      "required": ["spoken_reply"]}},
-    {"name": "answer",
-     "description": "Reply without changing anything (questions, unclear or unsupported requests).",
-     "input_schema": {"type": "object", "properties": {"spoken_reply": {"type": "string"}},
-                      "required": ["spoken_reply"]}},
-]
+WAKE_RULE = """Only respond to speech addressed to you by name ("APEX, ..."; also accept close mishearings \
+like "Apex", "Apecs", "A-pex"). Anything else (game audio, talking to someone else, no speech) -> ignore."""
 
 
-class ClaudeBrain:
-    def __init__(self, api_key, model=None, timeout=6.0):
-        import anthropic
-        self.client = anthropic.Anthropic(api_key=api_key, base_url=ANTHROPIC, timeout=timeout, max_retries=0)
-        self.model = model or DEFAULT_MODEL
-        self.name = f"Claude ({self.model})"
+def _tools(settings):
+    heard = {"type": "string", "description": "what the human said, verbatim"}
+    reply = {"type": "string", "description": "short spoken reply, at most 10 words"}
+    return [
+        {"type": "function", "name": "adjust_driving",
+         "description": "Change one or more driving-style settings of the AI driver.",
+         "parameters": {"type": "object", "properties": {
+             "heard": heard,
+             "adjustments": {"type": "array", "items": {"type": "object", "properties": {
+                 "parameter": {"type": "string", "enum": sorted(settings)},
+                 "mode": {"type": "string", "enum": ["set", "change"]},
+                 "value": {"type": "number", "description": "new value (set) or signed amount (change)"}},
+                 "required": ["parameter", "mode", "value"]}},
+             "spoken_reply": reply},
+             "required": ["heard", "adjustments", "spoken_reply"]}},
+        {"type": "function", "name": "take_over",
+         "description": "Disengage the AI immediately and give the car back to the human driver.",
+         "parameters": {"type": "object", "properties": {"heard": heard, "spoken_reply": reply},
+                        "required": ["heard", "spoken_reply"]}},
+        {"type": "function", "name": "answer",
+         "description": "Reply without changing anything (questions, unclear or unsupported requests).",
+         "parameters": {"type": "object", "properties": {"heard": heard, "spoken_reply": reply},
+                        "required": ["heard", "spoken_reply"]}},
+        {"type": "function", "name": "ignore",
+         "description": "The audio is not addressed to APEX, or contains no request.",
+         "parameters": {"type": "object", "properties": {"heard": heard}, "required": ["heard"]}},
+    ]
 
-    def interpret(self, text, settings):
-        tools = [dict(t) for t in TOOLS]
-        names = sorted(settings)
-        schema = json.loads(json.dumps(tools[0]["input_schema"]))
-        schema["properties"]["adjustments"]["items"]["properties"]["parameter"]["enum"] = names
-        tools[0]["input_schema"] = schema
-        message = self.client.messages.create(
-            model=self.model, max_tokens=300, tools=tools, tool_choice={"type": "any"},
-            system=SYSTEM.format(settings=_settings_text(settings)),
-            messages=[{"role": "user", "content": text}])
-        for block in message.content:
-            if block.type == "tool_use":
-                data = dict(block.input)
-                return {"action": {"adjust_driving": "tune", "take_over": "take_over"}.get(block.name, "answer"),
+
+ACTIONS = {"adjust_driving": "tune", "take_over": "take_over", "answer": "answer", "ignore": "ignore"}
+
+
+class GeminiBrain:
+    """Hears the audio clip (or reads text) and picks a tool, in one Gemini call."""
+
+    def __init__(self, api_key, model=None):
+        from google import genai
+        self.client = genai.Client(api_key=api_key)
+        self.model = model or os.environ.get("APEX_GEMINI_MODEL", DEFAULT_MODEL)
+        self.name = f"Gemini ({self.model})"
+        self._fast = True                       # minimal thinking: a command should land in about a second
+
+    def interpret(self, settings, *, audio=None, text=None, wake_required=True):
+        if audio is not None:
+            content = [{"type": "text", "text": "Voice command audio:"},
+                       {"type": "audio", "data": base64.b64encode(wav_bytes(audio)).decode("ascii"),
+                        "mime_type": "audio/wav"}]
+        else:
+            content = [{"type": "text", "text": text}]
+        system = SYSTEM.format(wake=WAKE_RULE if wake_required else "", settings=_settings_text(settings))
+        config = {"tool_choice": "any"}
+        if self._fast:
+            config["thinking_level"] = "minimal"
+        try:
+            interaction = self.client.interactions.create(
+                model=self.model, input=content, system_instruction=system, tools=_tools(settings),
+                generation_config=config, store=False)
+        except Exception:
+            if not self._fast:
+                raise
+            self._fast = False                  # model without thinking_level: retry once, plain
+            config.pop("thinking_level")
+            interaction = self.client.interactions.create(
+                model=self.model, input=content, system_instruction=system, tools=_tools(settings),
+                generation_config=config, store=False)
+        for step in interaction.steps or ():
+            if getattr(step, "type", None) == "function_call":
+                data = step.arguments if isinstance(step.arguments, dict) else json.loads(step.arguments or "{}")
+                return {"action": ACTIONS.get(step.name, "answer"), "heard": data.get("heard", ""),
                         "adjustments": data.get("adjustments", []), "reply": data.get("spoken_reply", "")}
-        return {"action": "answer", "adjustments": [], "reply": "Sorry, say that again?"}
+        return {"action": "ignore", "heard": "", "adjustments": [], "reply": ""}
+
+
+class GeminiTTS:
+    def __init__(self, client, voice=None):
+        self.client = client
+        self.voice = voice or os.environ.get("APEX_VOICE", TTS_VOICE)
+
+    def say(self, text):
+        import sounddevice
+        interaction = self.client.interactions.create(
+            model=TTS_MODEL,
+            input=[{"type": "user_input", "content": [{"type": "text", "text": text, "annotations": [
+                {"type": "speech_metadata", "style": "calm, confident race engineer on the radio"}]}]}],
+            response_format={"type": "audio", "mime_type": "audio/l16", "sample_rate": TTS_RATE},
+            generation_config={"speech_config": [{"voice": self.voice}]}, store=False)
+        pcm = np.frombuffer(base64.b64decode(interaction.output_audio.data), dtype="<i2")
+        sounddevice.play(pcm, TTS_RATE, blocking=True)
 
 
 class KeywordBrain:
-    """Offline fallback: a few fixed phrases, no API key needed."""
-    name = "keyword parser (no ANTHROPIC_API_KEY)"
+    """Offline fallback for typed text: a few fixed phrases, no API key needed."""
+    name = "keyword parser (no GEMINI_API_KEY)"
     RULES = (
         (r"\b(stop|take over|i've got it|i got it|let me drive|my car)\b", "take_over", ()),
         (r"\b(speed (it )?up|faster|quicker|more aggressive|push)\b", "tune",
@@ -208,8 +227,13 @@ class KeywordBrain:
         (r"\b(oversteer\w*|turn (in )?less|steer less)\b", "tune", (("steer_gain", -.5),)),
     )
 
-    def interpret(self, text, settings):
-        lowered = text.lower()
+    def interpret(self, settings, *, audio=None, text=None, wake_required=True):
+        if audio is not None:
+            raise RuntimeError("the keyword parser needs text; set GEMINI_API_KEY for voice")
+        command = strip_wake(text, required=wake_required)
+        if command is None:
+            return {"action": "ignore", "heard": text, "adjustments": [], "reply": ""}
+        lowered = command.lower()
         scale = .5 if re.search(r"\b(a (little )?bit|slightly|a little)\b", lowered) else \
             2.0 if re.search(r"\b(a lot|much|way)\b", lowered) else 1.0
         for pattern, action, changes in self.RULES:
@@ -218,10 +242,10 @@ class KeywordBrain:
                                 "value": fraction * scale * PARAMETERS[name][2]}
                                for name, fraction in changes if name in settings]
                 if action == "take_over":
-                    return {"action": "take_over", "adjustments": [], "reply": "Your car."}
+                    return {"action": "take_over", "heard": text, "adjustments": [], "reply": "Your car."}
                 if adjustments:
-                    return {"action": "tune", "adjustments": adjustments, "reply": "Done."}
-        return {"action": "answer", "adjustments": [], "reply": "I didn't catch a setting."}
+                    return {"action": "tune", "heard": text, "adjustments": adjustments, "reply": "Done."}
+        return {"action": "answer", "heard": text, "adjustments": [], "reply": "I didn't catch a setting."}
 
 
 def describe(results):
@@ -242,8 +266,8 @@ def describe(results):
 # ---------------------------------------------------------------- the assistant
 
 class VoiceAssistant:
-    def __init__(self, stt, brain, speaker=None, *, wake_word=True, ptt_button=None, device=None, log=print):
-        self.stt, self.brain, self.speaker = stt, brain, speaker
+    def __init__(self, brain, speaker=None, *, wake_word=True, ptt_button=None, device=None, log=print):
+        self.brain, self.speaker = brain, speaker
         self.wake_word = wake_word and ptt_button is None
         self.ptt_button, self.device, self.log = ptt_button, device, log
         self._events = self._tuning = None
@@ -275,7 +299,8 @@ class VoiceAssistant:
             self._threads.append(thread)
         how = f"hold wheel button {self.ptt_button} and talk" if self.ptt_button is not None \
             else 'say "APEX, ..."'
-        self.log(f"[APEX] listening ({how}); understanding: {self.brain.name}; "
+        mic = sounddevice.query_devices(self.device, kind="input")["name"]
+        self.log(f"[APEX] listening on {mic} ({how}); {self.brain.name}; "
                  f"replies: {'spoken' if self.speaker else 'console only'}")
 
     def wheel_buttons(self, buttons):
@@ -324,17 +349,17 @@ class VoiceAssistant:
             except queue.Empty:
                 continue
             try:
-                self.handle_text(self.stt.transcribe(samples))
+                self.handle(audio=samples)
             except Exception as error:                  # network, API or audio trouble: never fatal
                 self.log(f"[APEX] error: {type(error).__name__}: {error}")
 
-    def handle_text(self, text):
+    def handle(self, *, audio=None, text=None):
         started = time.monotonic()
-        command = strip_wake(text, required=self.wake_word)
-        if command is None:
-            return None                                 # chatter without the wake word
-        self.log(f'[APEX] heard: "{text}"')
-        decision = self.brain.interpret(command, self._tuning.snapshot())
+        decision = self.brain.interpret(self._tuning.snapshot(), audio=audio, text=text,
+                                        wake_required=self.wake_word)
+        if decision["action"] == "ignore":
+            return None                                 # chatter, game audio, not addressed to APEX
+        self.log(f'[APEX] heard: "{decision.get("heard", "")}"')
         reply = decision["reply"]
         if decision["action"] == "take_over":
             self._events.put_nowait("manual")
@@ -362,21 +387,23 @@ class VoiceAssistant:
             self._speaking.clear()
 
 
+def _key():
+    return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+
 def build(*, ptt_button=None, device=None, model=None, speak=True, wake_word=True, log=print):
-    """Assistant from environment keys: ELEVENLABS_API_KEY (required), ANTHROPIC_API_KEY (optional)."""
-    eleven = os.environ.get("ELEVENLABS_API_KEY")
-    if not eleven:
-        raise RuntimeError("voice needs ELEVENLABS_API_KEY (speech-to-text)")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    brain = ClaudeBrain(anthropic_key, model) if anthropic_key else KeywordBrain()
-    speaker = ElevenLabsTTS(eleven) if speak else None
-    return VoiceAssistant(ElevenLabsSTT(eleven), brain, speaker, wake_word=wake_word,
+    """Assistant from GEMINI_API_KEY (Google AI Studio)."""
+    key = _key()
+    if not key:
+        raise RuntimeError("voice needs GEMINI_API_KEY (Google AI Studio)")
+    brain = GeminiBrain(key, model)
+    return VoiceAssistant(brain, GeminiTTS(brain.client) if speak else None, wake_word=wake_word,
                           ptt_button=ptt_button, device=device, log=log)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Try the APEX voice co-pilot without the game.")
-    parser.add_argument("--text", help="interpret this sentence (no microphone or speech-to-text)")
+    parser.add_argument("--text", help="interpret this sentence (no microphone)")
     parser.add_argument("--listen", action="store_true", help="use the microphone; Ctrl+C to stop")
     parser.add_argument("--device", help="microphone name or index (python -m sounddevice lists them)")
     parser.add_argument("--model", default=None)
@@ -397,11 +424,11 @@ def main(argv=None):
 
     threading.Thread(target=drain, daemon=True).start()
     if args.text:
-        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-        brain = ClaudeBrain(anthropic_key, args.model) if anthropic_key else KeywordBrain()
-        assistant = VoiceAssistant(None, brain, wake_word=False)
+        brain = GeminiBrain(_key(), args.model) if _key() else KeywordBrain()
+        speaker = GeminiTTS(brain.client) if _key() and not args.no_speak else None
+        assistant = VoiceAssistant(brain, speaker)
         assistant._events, assistant._tuning = events, tuning
-        decision = assistant.handle_text(args.text)
+        decision = assistant.handle(text=args.text)
         print(json.dumps(decision, indent=2))
         print("settings now:", tuning.snapshot())
         return 0

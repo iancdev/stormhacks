@@ -727,11 +727,11 @@ def main(argv=None):
     parser.add_argument("--saliency", action="store_true", help="request opt-in activation previews from a compatible inference server")
     parser.add_argument("--voice", action="store_true",
                         help='APEX voice co-pilot: "APEX, speed it up a bit" tunes the driving style live '
-                             "(needs ELEVENLABS_API_KEY; ANTHROPIC_API_KEY for Claude, else keyword parsing)")
+                             "(Gemini: needs GEMINI_API_KEY)")
     parser.add_argument("--voice-button", type=int,
                         help="--voice: push-to-talk wheel button (SDL index) instead of the APEX wake word")
     parser.add_argument("--voice-device", help="--voice: microphone name or index (python -m sounddevice)")
-    parser.add_argument("--voice-model", help="--voice: Claude model id (default claude-haiku-4-5, for speed)")
+    parser.add_argument("--voice-model", help="--voice: Gemini model id (default gemini-3.8-flash)")
     parser.add_argument("--no-voice-reply", action="store_true", help="--voice: print replies, don't speak them")
     parser.add_argument("--inference-port", type=int, default=8765)
     parser.add_argument("--network-timeout", type=float, default=0.2, help="total request deadline in seconds")
