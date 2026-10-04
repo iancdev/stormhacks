@@ -434,3 +434,19 @@ def test_stationary_or_unknown_speed_hides_curve_but_retains_fresh_prediction():
         assert result['valid'] and result['angle'] == 45 and result['path'] == ''
     result = client(f'predictionVisual({json.dumps(visual_status(predicted_brake=.2))})')
     assert not result['valid'] and result['path'] == ''
+
+
+def test_applied_controls_expire_and_reject_unknown_or_invalid_values():
+    payload = json.dumps(visual_status(output_throttle=.2, output_brake=.1))
+    live = client(f'predictionVisual({payload})')
+    assert (live['appliedThrottle'], live['appliedBrake']) == (20, 10)
+    stale = client(f'predictionVisual({payload},false,500)')
+    assert stale['appliedThrottle'] is None and stale['appliedBrake'] is None
+    for value in ['null', 'NaN', 'Infinity', '-.1', '1.1']:
+        result = client(f'(()=>{{const d={payload};d.status.output_throttle={value};return predictionVisual(d)}})()')
+        assert result['appliedThrottle'] is None
+
+
+def test_labels_do_not_present_applied_pedals_as_model_prediction():
+    assert 'Applied gas ' in _PAGE and 'Applied brake ' in _PAGE
+    assert 'HUMAN PEDALS' not in _PAGE and 'Human pedals remain in control' not in _PAGE
