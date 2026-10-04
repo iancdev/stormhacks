@@ -68,7 +68,8 @@ def test_zero_maps_no_nan_no_fake_heatmap():
     png, active = render_preview(image, maps)
     pixels = np.array(Image.open(io.BytesIO(png)))
     assert not active
-    np.testing.assert_array_equal(pixels[:, :200], pixels[:, 200:])
+    overlay = pixels[:, 200:].astype(int)                 # plain dimmed grayscale: no green anywhere
+    assert (overlay[..., 1] == overlay[..., 0]).all() and (overlay[..., 1] == overlay[..., 2]).all()
     maps[0][0, 0] = np.nan
     with pytest.raises(ValueError):
         visualbackprop(maps)

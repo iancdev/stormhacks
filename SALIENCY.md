@@ -9,7 +9,7 @@ no production model weights or hardware; deployment must be coordinated separate
 The left image is the actual **200×66 normalized tensor fed into the model**,
 converted back to RGB for display. It is captured by a model pre-hook, after any
 predictor wrapper's contrast/saturation adjustments and the model's own
-crop/resize/normalization. The right image is the same input with an amber
+crop/resize/normalization. The right image is the same input in dimmed grayscale with a green
 activation overlay. A single lossless 400×66 PNG keeps both images aligned.
 The caption identifies the original frame/request, its age, and that frame's
 prediction. This is separate from the existing faster road-crop HUD.

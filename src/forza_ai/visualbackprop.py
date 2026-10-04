@@ -48,8 +48,10 @@ def render_preview(image, maps):
         raise ValueError('invalid model input')
     rgb = np.rint((image.transpose(1, 2, 0) + 1) * 127.5).clip(0, 255).astype(np.uint8)
     mask = visualbackprop(maps)
-    alpha = (mask * .70)[..., None]
-    overlay = np.rint(rgb * (1 - alpha) + np.array([255, 174, 48]) * alpha).astype(np.uint8)
+    # Dimmed grayscale road with green activation, so highlights don't blend into road colours.
+    gray = (rgb @ np.array([.299, .587, .114]))[..., None] * .55
+    alpha = (mask ** .7 * .85)[..., None]
+    overlay = np.rint(gray * (1 - alpha) + np.array([40, 255, 90]) * alpha).clip(0, 255).astype(np.uint8)
     output = io.BytesIO()
     Image.fromarray(np.concatenate((rgb, overlay), axis=1)).save(output, format='PNG', compress_level=1)
     png = output.getvalue()
