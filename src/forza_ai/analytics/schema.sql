@@ -1,32 +1,50 @@
 -- Tiger Data (TimescaleDB) analytics schema. Analytics only: never read by the
 -- control loop, training, or inference. Each statement is executed separately
 -- in autocommit mode; continuous aggregates cannot be created in a transaction.
+-- Every statement is idempotent so `forza-analytics init` can be rerun after upgrades.
 
+-- Sample stream from every source: 'recorder' (record.py human laps), 'session'
+-- (runtime --record-session, stream-v1) and 'runtime' (--status-csv finite test runs).
 CREATE TABLE IF NOT EXISTS wheel_samples (
     time          TIMESTAMPTZ      NOT NULL,
     session       TEXT             NOT NULL,
-    source        TEXT             NOT NULL,  -- 'recorder' (human laps) or 'runtime' (controller/AI runs)
-    segment       INTEGER,
+    source        TEXT             NOT NULL,  -- recorder | session | runtime
+    segment       INTEGER,                    -- recorder pause segment
     frame_id      BIGINT,
     image_path    TEXT,                       -- pointer to the JPEG on disk; pixels are never stored here
-    mode          TEXT,                       -- manual | assist | takeover
+    mode          TEXT,                       -- manual | assist | takeover | fault
     steer_deg     DOUBLE PRECISION,           -- measured physical wheel angle, right positive
-    target_deg    DOUBLE PRECISION,           -- limited controller target (runtime only)
-    predicted_deg DOUBLE PRECISION,           -- raw policy output (runtime only)
-    torque        DOUBLE PRECISION,           -- normalized [-1, 1] (runtime only)
+    target_deg    DOUBLE PRECISION,           -- limited controller target (status CSV only)
+    predicted_deg DOUBLE PRECISION,           -- raw policy output (status CSV only)
+    torque        DOUBLE PRECISION,           -- normalized [-1, 1] (status CSV only)
     speed_mps     DOUBLE PRECISION,
     gas           DOUBLE PRECISION,
     brake         DOUBLE PRECISION,
     race_on       BOOLEAN,
-    obs_age_ms    DOUBLE PRECISION,           -- wheel sample age (recorder) or observation age (runtime)
-    yaw_rate      DOUBLE PRECISION,           -- game yaw rate (newer recorder versions only)
-    gear          INTEGER                     -- in-game gear (newer recorder versions only)
+    obs_age_ms    DOUBLE PRECISION,           -- wheel sample age (recorder) or observation age (status CSV)
+    yaw_rate      DOUBLE PRECISION,           -- newer record.py versions only
+    gear          INTEGER,                    -- newer record.py versions only
+    rpm           DOUBLE PRECISION,           -- stream-v1 telemetry
+    game_ms       BIGINT                      -- stream-v1 game clock
 );
 
+-- Columns added after the first deployment; no-ops on a fresh install.
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS yaw_rate DOUBLE PRECISION;
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS gear INTEGER;
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS rpm DOUBLE PRECISION;
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS game_ms BIGINT;
+
+SELECT create_hypertable('wheel_samples', 'time', if_not_exists => TRUE);
+
+CREATE INDEX IF NOT EXISTS wheel_samples_session_time ON wheel_samples (session, time DESC);
+
+ALTER TABLE wheel_samples SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'session, source',
+    timescaledb.compress_orderby = 'time DESC'
+);
+
+SELECT add_compression_policy('wheel_samples', INTERVAL '1 day', if_not_exists => TRUE);
 
 -- Control hand-offs from stream-v1 events.csv: the authoritative takeover record.
 CREATE TABLE IF NOT EXISTS control_events (
@@ -63,18 +81,7 @@ CREATE TABLE IF NOT EXISTS run_reports (
     report                          JSONB NOT NULL
 );
 
-SELECT create_hypertable('wheel_samples', 'time', if_not_exists => TRUE);
-
-CREATE INDEX IF NOT EXISTS wheel_samples_session_time ON wheel_samples (session, time DESC);
-
-ALTER TABLE wheel_samples SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'session, source',
-    timescaledb.compress_orderby = 'time DESC'
-);
-
-SELECT add_compression_policy('wheel_samples', INTERVAL '1 day', if_not_exists => TRUE);
-
+-- Per-minute rollup read by reports and dashboards.
 CREATE MATERIALIZED VIEW IF NOT EXISTS stability_1m
 WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
 SELECT session,

@@ -74,7 +74,7 @@ def main(argv=None):
             if args.events:
                 print("\nControl hand-offs (control_events)\n"
                       + report.format_table(*report.fetch(conn, report.CONTROL_EVENTS, session=args.session)))
-                print("\nTakeover onsets inferred from samples\n"
+                print("\nTakeover onsets in status-CSV runs\n"
                       + report.format_table(*report.fetch(conn, report.TAKEOVER_EVENTS, session=args.session)))
 
 

@@ -57,12 +57,16 @@ WHERE (%(session)s::text IS NULL OR e.session = %(session)s)
 ORDER BY e.session, e.time
 """
 
+# Status CSVs have no events file, so takeover onsets are inferred from mode changes.
 TAKEOVER_EVENTS = """
-SELECT session, time, steer_deg, target_deg, speed_mps * 3.6 AS kmh
+SELECT session, time,
+       round(steer_deg::numeric, 1)           AS steer_deg,
+       round(target_deg::numeric, 1)          AS target_deg,
+       round((speed_mps * 3.6)::numeric, 1)   AS kmh
 FROM (
     SELECT *, lag(mode) OVER (PARTITION BY session ORDER BY time) AS previous_mode
     FROM wheel_samples
-    WHERE source IN ('runtime', 'session')
+    WHERE source = 'runtime'
 ) ticks
 WHERE mode = 'takeover' AND previous_mode IS DISTINCT FROM 'takeover'
   AND (%(session)s::text IS NULL OR session = %(session)s)
