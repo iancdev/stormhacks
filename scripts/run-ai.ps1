@@ -73,7 +73,7 @@ param(
     [int]$FfbSign = 1,
     # Smooth the replayed force (time constant, ms): less jitter, slightly later road feel. 0 = raw.
     [ValidateRange(0, 500)]
-    [double]$FfbSmoothMs = 50,
+    [double]$FfbSmoothMs = 20,
     # Mirror: grabbing the wheel takes over once it is this far from the AI's angle and still being
     # pulled away for 0.08 s (the old 30 deg / 0.3 s rule took 1-1.5 s against the motor). 0 = old rule only.
     [ValidateRange(0, 90)]
