@@ -66,6 +66,13 @@ param(
     # pulled away for 0.08 s (the old 30 deg / 0.3 s rule took 1-1.5 s against the motor). 0 = old rule only.
     [ValidateRange(0, 90)]
     [double]$FastGrabDeg = 15,
+    # Slow backup rule (wheel held far off for a while). In hard corners the AI can ask for 40-80 deg
+    # faster than the 22% motor can follow; with 30 deg / 0.3 s that lag was mistaken for a human
+    # takeover 5 times in one run. The fast rule catches real grabs, so the backup is strict.
+    [ValidateRange(10, 180)]
+    [double]$SlowGrabDeg = 60,
+    [ValidateRange(0.1, 5)]
+    [double]$SlowGrabS = 1.0,
     [ValidateRange(0, 2000)]
     [double]$TakeoverSettleMs = 300
 )
@@ -108,7 +115,8 @@ if ($Record) {
     $runtimeArgs += @("--record-session", $session, "--takeover-settle-ms", $TakeoverSettleMs)
 }
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
-if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel", "--mirror-fast-grab-deg", $FastGrabDeg) }
+if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel", "--mirror-fast-grab-deg", $FastGrabDeg,
+                                             "--mirror-grab-deg", $SlowGrabDeg, "--mirror-grab-s", $SlowGrabS) }
 # --motor-update-ms/--torque-step: the TMX queues commands sent every 10 ms and falls further behind.
 if ($Mode -ne "Vjoy") { $runtimeArgs += @("--kp", $Kp, "--kd", $Kd, "--friction", $Friction,
                                           "--motor-update-ms", 30, "--torque-step", 0.02) }

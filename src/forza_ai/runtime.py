@@ -712,7 +712,12 @@ def main(argv=None):
                         help="--mirror-wheel: also take over when the wheel is this far from the AI's angle "
                              "and still being pulled away (against the motor) for 0.08 s; 0 = off")
     parser.add_argument("--mirror-grab-deg", type=float, default=30.0,
-                        help="--mirror-wheel: holding the wheel this far from the AI's angle for 0.3 s takes over")
+                        help="--mirror-wheel: holding the wheel this far from the AI's angle for "
+                             "--mirror-grab-s takes over (slow backup rule)")
+    parser.add_argument("--mirror-grab-s", type=float, default=0.3,
+                        help="--mirror-wheel: how long the slow backup rule needs. With a weak motor the wheel "
+                             "can lag the AI by 30+ deg in hard corners, so pair --mirror-fast-grab-deg with a "
+                             "stricter slow rule (e.g. 60 deg / 1.0 s)")
     parser.add_argument("--no-vjoy", action="store_true",
                         help="observe only, for --shadow while Forza reads the TMX directly: never acquire or "
                              "write vJoy (otherwise Forza sees a duplicate controller) and never open the motor")
@@ -842,6 +847,7 @@ def main(argv=None):
                      dashboard_port=args.dashboard_port, run_report=args.run_report,
                      direct_vjoy=args.direct_vjoy, direct_override_deg=args.override_deg,
                      mirror_wheel=args.mirror_wheel, mirror_grab_deg=args.mirror_grab_deg,
+                     mirror_grab_s=args.mirror_grab_s,
                      mirror_fast_grab_deg=args.mirror_fast_grab_deg,
                      throttle_cap=args.throttle_cap, throttle_rate=args.throttle_rate,
                      max_speed_kmh=args.max_speed_kmh, brake_gain=args.brake_gain,
