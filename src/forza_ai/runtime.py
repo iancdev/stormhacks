@@ -335,7 +335,6 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 human_control = False
                 command = None
                 controller.disengage("actuation_deadline_expired", fault=True)
-                status = replace(status, mode=controller.mode, reason="actuation_deadline_expired", torque=0.0)
                 status = replace(status, mode=controller.mode, reason=controller.reason, torque=0.0)
                 input_error = controller.reason
             if explicit_takeover:
