@@ -59,6 +59,13 @@ param(
     [switch]$HumanPedals,
     # Requires a compatible inference server also explicitly started with --saliency.
     [switch]$Saliency,
+    # APEX voice co-pilot: "APEX, speed it up a bit" tunes throttle/brakes/steering gain live.
+    # Needs ELEVENLABS_API_KEY; ANTHROPIC_API_KEY (Claude) understands free speech, without it only
+    # fixed phrases work. -VoiceButton = push-to-talk wheel button instead of the wake word.
+    [switch]$Voice,
+    [ValidateRange(-1, 127)]
+    [int]$VoiceButton = -1,
+    [string]$VoiceDevice = "",
     # Re-engage automatically after a network blip (timeout / late prediction) within this many
     # seconds; never after a human takeover, pause or fault. 0 = off (press ARM again).
     [ValidateRange(0, 10)]
@@ -100,6 +107,16 @@ if (-not $env:FORZA_LINK_KEY) {
     $env:FORZA_LINK_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'Shared LAN key' -AsSecureString)).Password
 }
 
+if ($Voice) {
+    # Hidden prompts, process-only, like the LAN key. Leave the Anthropic one empty for keyword mode.
+    if (-not $env:ELEVENLABS_API_KEY) {
+        $env:ELEVENLABS_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'ElevenLabs API key' -AsSecureString)).Password
+    }
+    if ($null -eq $env:ANTHROPIC_API_KEY) {
+        $env:ANTHROPIC_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'Anthropic API key (Enter = keyword mode)' -AsSecureString)).Password
+    }
+}
+
 $runs = Join-Path $repo "runs"
 New-Item -ItemType Directory -Force -Path $runs | Out-Null
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -127,6 +144,11 @@ if ($Record) {
     $runtimeArgs += @("--record-session", $session, "--takeover-settle-ms", $TakeoverSettleMs)
 }
 if ($Saliency) { $runtimeArgs += "--saliency" }
+if ($Voice) {
+    $runtimeArgs += "--voice"
+    if ($VoiceButton -ge 0) { $runtimeArgs += @("--voice-button", $VoiceButton) }
+    if ($VoiceDevice) { $runtimeArgs += @("--voice-device", $VoiceDevice) }
+}
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
 if ($Mode -eq "Mirror") {
     $runtimeArgs += @("--direct-vjoy", "--mirror-wheel")

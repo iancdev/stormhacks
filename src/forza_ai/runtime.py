@@ -47,7 +47,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         mirror_fast_grab_s=0.08,
         throttle_cap=1.0, throttle_rate=0.0, max_speed_kmh=0.0,
         brake_gain=1.0, corner_speed_kmh=0.0, corner_angle_deg=15.0, corner_brake=0.6,
-        auto_rearm_s=0.0, ffb_scale=0.0, ffb_sign=1.0, ffb_smooth_ms=0.0):
+        auto_rearm_s=0.0, ffb_scale=0.0, ffb_sign=1.0, ffb_smooth_ms=0.0, voice=None):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -122,6 +122,15 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             raise ValueError("takeover_settle_ms must be finite and nonnegative")
         controller = SteeringController(config)
         events = command_queue if command_queue is not None else queue.Queue(maxsize=64)
+        # Live-adjustable driving style (voice commands): only what this run actually uses.
+        from forza_ai.tuning import LiveTuning
+        tunable = {"steer_gain": controller.config.steer_gain}
+        if auto_pedals:
+            tunable.update(throttle_cap=throttle_cap, max_speed_kmh=max_speed_kmh, brake_gain=brake_gain,
+                           corner_speed_kmh=corner_speed_kmh)
+            if throttle_rate:                       # 0 = no ramp at all, already the fastest
+                tunable["throttle_rate"] = throttle_rate
+        tuning = LiveTuning(**tunable)
         if interactive:
             threading.Thread(target=_read_console, args=(events, stop_console), daemon=True).start()
             print("Commands: arm, manual, route_start, route_complete, route_abort, quit + Enter.")
@@ -150,6 +159,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             progress_worker.start()
         worker = PolicyWorker(policy, hz=policy_hz)
         worker.start()
+        if voice is not None:
+            voice.start(events, tuning)
         handled_failure = 0
 
         def consume_policy_failure():
@@ -239,6 +250,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 input_error = "inference_failure"
                 controller.disengage("inference_failure")
             buttons = set(wheel.buttons)
+            if voice is not None:
+                voice.wheel_buttons(buttons)        # push-to-talk, if configured
             # A held startup/arm button is never an engagement edge.
             rising = set() if previous_buttons is None else buttons - previous_buttons
             previous_buttons = buttons
@@ -310,6 +323,25 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                         pending_arm = True
                         active_arm_until = time.monotonic() + arm_timeout
                         metrics.event("arm", time.monotonic_ns())
+                elif isinstance(event, tuple) and len(event) == 3 and event[0] == "tune":
+                    # Voice tuning: bounded changes, applied between ticks on this thread.
+                    _, adjustments, reply = event
+                    results = tuning.apply(adjustments)
+                    if tuning.values["steer_gain"] != controller.config.steer_gain:
+                        controller.config = replace(controller.config, steer_gain=tuning.values["steer_gain"])
+                    changed = [r for r in results if r.get("applied")]
+                    if changed:
+                        summary.setdefault("tuning_changes", []).append(
+                            {"t_s": round(time.monotonic() - started, 1),
+                             **{r["parameter"]: r["new"] for r in changed}})
+                        print("\ntuning: " + ", ".join(f"{r['parameter']} {r['old']:g} -> {r['new']:g}"
+                                                       for r in changed), flush=True)
+                    summary["tuning"] = tuning.snapshot()
+                    if reply is not None:
+                        try:
+                            reply.put_nowait(results)
+                        except queue.Full:
+                            pass
                 elif event == "route_start" and not route_active:
                     metrics.event(event, time.monotonic_ns())
                     route_active = True
@@ -374,6 +406,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 status = replace(status, torque=0.0)
             virtual = virtual_driving_state(wheel, status, command, direct_vjoy, auto_pedals)
             if auto_pedals and status.mode == ControlMode.ASSIST:
+                throttle_cap, throttle_rate = tuning.values["throttle_cap"], tuning.values.get("throttle_rate", 0.0)
+                max_speed_kmh, brake_gain = tuning.values["max_speed_kmh"], tuning.values["brake_gain"]
+                corner_speed_kmh = tuning.values["corner_speed_kmh"]
                 brake = min(1.0, virtual.brake * brake_gain)
                 speed_kmh = vehicle.speed_mps * 3.6 if vehicle is not None else None
                 if (corner_speed_kmh and speed_kmh is not None and abs(status.target_angle_deg) >= corner_angle_deg
@@ -577,7 +612,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         # order even if a driver throws; adapter.close() retries its own releases.
         stop_console.set()
         cleanup = [("zero_motor", lambda: adapter.set_torque(0.0)), ("adapter", adapter.close)]
-        for name, resource in (("policy", worker), ("capture", camera),
+        for name, resource in (("voice", voice), ("policy", worker), ("capture", camera),
                                ("telemetry", receiver), ("progress", progress_worker), ("dashboard", dashboard)):
             if resource is not None:
                 cleanup.append((name, resource.close))
@@ -690,6 +725,14 @@ def main(argv=None):
     parser.add_argument("--pedal-override", type=float, default=0.05,
                         help="physical pedal fraction that takes over (default .05)")
     parser.add_argument("--saliency", action="store_true", help="request opt-in activation previews from a compatible inference server")
+    parser.add_argument("--voice", action="store_true",
+                        help='APEX voice co-pilot: "APEX, speed it up a bit" tunes the driving style live '
+                             "(needs ELEVENLABS_API_KEY; ANTHROPIC_API_KEY for Claude, else keyword parsing)")
+    parser.add_argument("--voice-button", type=int,
+                        help="--voice: push-to-talk wheel button (SDL index) instead of the APEX wake word")
+    parser.add_argument("--voice-device", help="--voice: microphone name or index (python -m sounddevice)")
+    parser.add_argument("--voice-model", help="--voice: Claude model id (default claude-haiku-4-5, for speed)")
+    parser.add_argument("--no-voice-reply", action="store_true", help="--voice: print replies, don't speak them")
     parser.add_argument("--inference-port", type=int, default=8765)
     parser.add_argument("--network-timeout", type=float, default=0.2, help="total request deadline in seconds")
     parser.add_argument("--target-angle", type=float, default=None, help="fixed target, or positive sweep amplitude; default 5")
@@ -840,6 +883,19 @@ def main(argv=None):
     reserved = {value for value in (args.takeover_button, args.arm_button, args.route_button) if value is not None}
     if reserved.intersection(mapping):
         parser.error("takeover/arm/route buttons are reserved; don't also map them to game actions")
+    voice = None
+    if args.voice:
+        if args.voice_button is not None and (args.voice_button in reserved or args.voice_button in mapping):
+            parser.error("--voice-button must differ from the takeover/arm/route and mapped buttons")
+        from forza_ai.voice import build as build_voice
+        device = int(args.voice_device) if args.voice_device and args.voice_device.isdigit() else args.voice_device
+        try:
+            voice = build_voice(ptt_button=args.voice_button, device=device, model=args.voice_model,
+                                speak=not args.no_voice_reply)
+        except (RuntimeError, ImportError) as error:
+            parser.error(f"--voice: {error}")
+    elif args.voice_button is not None:
+        parser.error("--voice-button requires --voice")
     recorder = None
     if args.record_session is not None:
         from forza_ai.recording import SessionRecorder
@@ -891,7 +947,7 @@ def main(argv=None):
                      max_speed_kmh=args.max_speed_kmh, brake_gain=args.brake_gain,
                      corner_speed_kmh=args.corner_speed_kmh, corner_angle_deg=args.corner_angle_deg,
                      auto_rearm_s=args.auto_rearm_s, ffb_scale=args.forward_ffb, ffb_sign=args.ffb_sign,
-                     ffb_smooth_ms=args.ffb_smooth_ms,
+                     ffb_smooth_ms=args.ffb_smooth_ms, voice=voice,
                      auto_pedals=args.auto_pedals, pedal_override=args.pedal_override,
                      dashboard_host=args.dashboard_host)
     except KeyboardInterrupt:
