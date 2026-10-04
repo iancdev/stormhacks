@@ -127,3 +127,22 @@ class RuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_cli_dashboard_default_and_explicit_loopback(monkeypatch):
+    from forza_ai import runtime
+    calls = []
+    def fake_run(adapter, policy, **kwargs):
+        calls.append(kwargs)
+        adapter.close()
+        return {}
+    monkeypatch.setattr(runtime, 'run', fake_run)
+    assert runtime.main(['--backend', 'sim', '--quiet']) == 0
+    assert calls[-1]['dashboard_host'] == '0.0.0.0'
+    assert calls[-1]['dashboard_port'] is None
+    assert runtime.main(['--backend', 'sim', '--quiet', '--dashboard-port', '8766']) == 0
+    assert calls[-1]['dashboard_host'] == '0.0.0.0'
+    assert calls[-1]['dashboard_port'] == 8766
+    assert runtime.main(['--backend', 'sim', '--quiet', '--dashboard-port', '8766',
+                         '--dashboard-host', '127.0.0.1']) == 0
+    assert calls[-1]['dashboard_host'] == '127.0.0.1'

@@ -68,18 +68,19 @@ request is reported as delivery unconfirmed because the runtime may have queued 
 Keep the game foreground during assisted driving. Inspect the dashboard on a
 second screen without taking focus, or use the physical buttons. Clicking the
 browser causes the foreground guard to disengage AI; an arm request gives you
-time to return to the game. The default dashboard is not exposed on the LAN.
+time to return to the game. When enabled, the client dashboard listens on all IPv4 interfaces by default.
+Use `--dashboard-host 127.0.0.1` to restrict it to the client PC.
 
 ### Access from another computer
 
-Add `--dashboard-host 0.0.0.0 --dashboard-port 8766` to the existing runtime
+Add `--dashboard-port 8766` to the existing runtime
 command **on the PC running Forza and the wheel client**. This listens on all
 IPv4 interfaces. Alternatively bind only that PC's specific LAN IPv4 address.
 Open `http://<RACING-PC-LAN-IP>:8766` from the other computer; `0.0.0.0` is a
 listen address, not a browser destination, and the other computer's localhost
 would point at itself. This does not create a dashboard on the inference laptop.
 
-Saved game profiles support `run.dashboard_host` (default `127.0.0.1`) alongside
+Saved game profiles support `run.dashboard_host` (default `0.0.0.0`) alongside
 `run.dashboard_port`. The existing launcher passes both to the runtime. Adding
 the bind option does not change `manual`, `shadow`, or `assist` engagement mode.
 
@@ -230,3 +231,27 @@ stale/offline. Browser elapsed time advances these checks between responses. Pol
 most 10 Hz with one request in flight; full HTTP round-trip time is conservatively
 added to snapshot age. No command lifetime is extended to keep the curve visible.
 There is no extra capture, image encoding, hardware owner, or control-loop I/O.
+# Inference connection diagnostics
+
+The inference server CLI writes best-effort JSON lines alongside its startup
+message. Events identify a process-local connection number and peer, UTC time,
+first authenticated/protocol-valid request, first prediction sent, five-second
+aggregate summaries while requests complete, and connection closure. A sent
+response is not proof the game applied it. Rates are connection-lifetime means.
+
+Closure records distinguish authentication/protocol rejection, idle receive
+timeout (no new bytes), partial-request timeout, peer EOF/reset, busy model,
+decode failure, model failure and server shutdown. `phase` identifies the
+operation at failure; raw exception arguments, keys, HMACs, images, session
+nonces and predictions are never logged. A client that rejects the server's
+hello may simply appear as EOF; the server cannot know that client's reason.
+
+`completed_model_calls` and model mean/max cover observed completed calls;
+`model_elapsed_ms` also reports elapsed work at a model timeout/disconnect,
+not the eventual duration of a still-running call. Request timing includes
+waiting for bytes. Existing protocol, model outputs and timeouts are unchanged.
+
+Formatting and output run on a daemon with a bounded 256-event queue. Overflow
+or output failure drops diagnostics (`log_dropped`) rather than blocking model
+or transport work. Shutdown waits at most 250 ms for logging; a blocked sink
+can lose final records. These logs cannot reconstruct failures before deployment.
