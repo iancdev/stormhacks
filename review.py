@@ -11,13 +11,16 @@ Prints a per-segment summary and flags frames that probably aren't your driving:
   wild       wheel past 90 degrees. Shown for information only, KEPT for training: failed slides end
              in a rewind/crash that the recorder and seg_edge already remove, so what's left are
              slides you caught, which are the recovery examples the model needs.
-  seg_edge   first 3 s and last 3 s of every segment (late-noticed mistakes before a rewind,
-             a crash before Ctrl+C, lap banners after a restart)
+  seg_edge   first 3 s and the last seconds of every segment (late-noticed mistakes before a
+             rewind/reset, a crash before Ctrl+C, lap banners after a restart). Last 3 s when the
+             recorder already dropped 10 s at every pause (discard_on_pause in meta.json), else 12 s:
+             older sessions kept the run-up to resets the race-clock watchdog didn't see.
 Writes <session>/review.png: steering over time (flags in red, segment breaks in yellow), then
 the first and last frames of every segment, then a sample of flagged frames. Opens it when done.
 """
 import csv
 import glob
+import json
 import os
 import sys
 
@@ -41,7 +44,7 @@ def excluded_reason(session):
     return None
 
 
-def flags_for(rows):
+def flags_for(rows, before_end_s=3.0):
     f = lambda k: np.array([float(r[k]) if r.get(k, "") != "" else np.nan for r in rows])
     deg, ts, v, gear = f("steer_deg"), f("tele_steer"), f("speed_mps") * 3.6, f("gear")
     ok = (np.abs(deg) > 5) & (np.abs(deg) < 60) & (np.abs(ts) < 120)
@@ -52,7 +55,7 @@ def flags_for(rows):
         "reverse": gear == 0,
         "slow": v < 20,
         "wild": np.abs(deg) > 90,
-        "seg_edge": segment_edges(rows),
+        "seg_edge": segment_edges(rows, before_end_s=before_end_s),
     }
     return flags, deg, ts, k, v
 
@@ -116,7 +119,11 @@ def main():
     rows = list(csv.DictReader(open(os.path.join(session, "labels.csv"))))
     if not rows:
         sys.exit(f"{session}: no frames")
-    flags, deg, ts, k, v = flags_for(rows)
+    meta_path = os.path.join(session, "meta.json")
+    meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
+    before_end_s = 3.0 if meta.get("discard_on_pause") else 12.0
+    flags, deg, ts, k, v = flags_for(rows, before_end_s=before_end_s)
+    print(f"Buffer before each segment end: {before_end_s:g} s")
     info = {"wild"}   # shown, not excluded
     any_flag = np.any(np.stack([m for n, m in flags.items() if n not in info]), axis=0)
 

@@ -15,9 +15,10 @@ Options:
     record --vjoy                       # also pass TMX steering/pedals through to vJoy (no FFB)
     record --no-telemetry               # record even without Forza Data Out (no speed, no pause)
     record --rewind-button N            # pressing TMX button N (your Forza rewind) drops the last
-                                        # --drop-seconds (default 5) of frames + the rewind itself
-    (rewinds are also detected automatically when Forza's race clock jumps backwards;
-     --no-auto-rewind turns that off)
+                                        # --drop-seconds (default 10) of frames + the rewind itself
+    (rewinds are also detected automatically when Forza's race clock or distance travelled jumps
+     backwards; --no-auto-rewind turns that off. Any pause also drops the held-back frames, because
+     car resets don't move either; --keep-before-pause turns that off)
 
 Crop/mask settings live in config/capture.json. Recordings go to data/recordings/<timestamp>/:
 frames/000000.jpg ..., hud/*.png, labels.csv, capture_timing.csv, and meta.json.
@@ -357,7 +358,7 @@ class TelemetryReader(threading.Thread):
             raise
 
     def run(self):
-        prev_race_time = None
+        prev_race_time = prev_distance = None
         try:
             while not self.stop.is_set():
                 try:
@@ -381,9 +382,12 @@ class TelemetryReader(threading.Thread):
                         or not all(math.isfinite(values[i]) for i in (1, 3, 4, 5))):
                     continue
                 if values[0] == 1:
-                    if prev_race_time is not None and values[3] < prev_race_time - .05:
+                    # Some modes (long events/free roam) reset or rewind the car without
+                    # turning the race clock back, but distance travelled does go back.
+                    if ((prev_race_time is not None and values[3] < prev_race_time - .05)
+                            or (prev_distance is not None and values[4] < prev_distance - 5.0)):
                         self.last_backjump = received_ns / 1e9
-                    prev_race_time = values[3]
+                    prev_race_time, prev_distance = values[3], values[4]
                 self.latest_ns = (received_ns, *values)
                 self.latest = (received_ns / 1e9, *values)
         except Exception as error:
@@ -594,7 +598,7 @@ def cmd_record(args):
     session_dir = None
     frame_idx, segment, recording = 0, -1, False
     dropped, inactive = 0, 0
-    discarded = discarded_at_stop = rewinds = takeovers = 0
+    discarded = discarded_at_stop = rewinds = takeovers = pause_discards = 0
     was_rewinding = in_takeover = False
     ratios = deque(maxlen=900)
     mismatch_run = match_run = 0
@@ -700,6 +704,12 @@ def cmd_record(args):
             if in_takeover:
                 active, state = False, "game steering, not you"
 
+            if recording and not active and pending and not in_takeover and not args.keep_before_pause:
+                # Any pause may be a reset the watchdog can't see (e.g. the car put back on the road,
+                # with neither race clock nor distance moving back): drop the held-back frames too.
+                pause_discards += 1
+                discarded += len(pending)
+                pending.clear()
             if not active:
                 recording = False
             if img is not None:
@@ -776,7 +786,8 @@ def cmd_record(args):
             "producer_schema": PRODUCER_SCHEMA, "producer_sha256": producer_sha256,
             "frames": writer.saved, "segments": segment + 1, "dropped": dropped, "vjoy": args.vjoy,
             "accepted_frame_count": frame_idx, "frame_ids_may_have_gaps": True,
-            "rewinds": rewinds, "takeovers": takeovers,
+            "rewinds": rewinds, "takeovers": takeovers, "pause_discards": pause_discards,
+            "discard_on_pause": not args.keep_before_pause,
             "discarded_by_rewind_or_takeover": discarded, "discarded_at_stop": discarded_at_stop,
             "drop_seconds": args.drop_seconds, "rewind_button": args.rewind_button,
             "auto_rewind": not args.no_auto_rewind,
@@ -802,7 +813,8 @@ def cmd_record(args):
         handle.write("\n")
     os.replace(temporary, os.path.join(session_dir, "meta.json"))
     print(f"Saved {writer.saved} frames in {segment + 1} segment(s) to {session_dir} (queue dropped {dropped})")
-    print(f"Rewinds: {rewinds}; game takeovers: {takeovers}; intentionally discarded {discarded} frames, "
+    print(f"Rewinds: {rewinds}; game takeovers: {takeovers}; pauses: {pause_discards}; "
+          f"intentionally discarded {discarded} frames, "
           f"plus {discarded_at_stop} pending frames at stop.")
     print(f"Measured fresh capture {measured['captured_fps']:.1f} fps; saved {measured['saved_fps']:.1f} fps "
           f"over {measured['duration_s']:.1f}s (includes pauses, excludes writer drain).")
@@ -874,8 +886,10 @@ def argument_parser():
     rp.add_argument("--port", type=int, default=9999)
     rp.add_argument("--rewind-button", type=int, default=None,
                     help="TMX button bound to Rewind in Forza (number from: python utils\\test.py wheel)")
-    rp.add_argument("--drop-seconds", type=float, default=5.0,
-                    help="seconds of frames thrown away on a rewind")
+    rp.add_argument("--drop-seconds", type=float, default=10.0,
+                    help="seconds of frames held back and thrown away on a rewind/reset/pause (default 10)")
+    rp.add_argument("--keep-before-pause", action="store_true",
+                    help="don't drop the held-back frames on a plain pause (only on detected rewinds)")
     rp.add_argument("--no-auto-rewind", action="store_true",
                     help="turn off the race-clock rewind watchdog (button only)")
     sub.add_parser("wheel", help="live TMX readout as the recorder sees it (RawInput)")
