@@ -141,6 +141,12 @@ H1, H2 and H4 need `predicted_deg`, so the run must have been recorded with
 workflow: load run v1, read the clearest signal, turn that knob, re-run the
 same route as v2, and compare the two rows in the Runs table.
 
+Read H4 after H1: an amplitude bias makes the lag curve monotonic (no clear
+minimum), so the lag estimate is only meaningful once the gain is roughly right.
+H4 also assumes ~10 ms sample spacing and pairs rows across non-contiguous
+human segments, so treat it as approximate. Verified on a simulated session with
+a planted 0.75x understeer: H1 reported `human_over_ai_ratio` 1.33.
+
 Tests in `tests/analytics` cover CSV/JSON conversion, the causal joins, and
 schema parsing with fakes and need no database. The live path was exercised
 against a Tiger Cloud free service with a synthetic `record.py` lap, a stream-v1
