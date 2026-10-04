@@ -421,6 +421,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if dashboard is not None and after_io >= next_dashboard_ns:
                 dashboard_metrics = metrics.summary()
                 summary["policy_worker"] = worker.stats() if hasattr(worker, "stats") else None
+                if frame is not None:
+                    dashboard.publish_frame(frame)
                 dashboard.publish(dict(summary, route_active=route_active,
                                        human_interventions=dashboard_metrics["human_interventions"],
                                        metrics=dashboard_metrics, rates=live_rates.summary(),

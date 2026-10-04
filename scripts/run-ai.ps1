@@ -39,7 +39,9 @@ param(
     [ValidateRange(0, 400)]
     [double]$MaxSpeedKmh = 0,
     # AI steers only; you drive the gas and brake (pressing them does not take over).
-    [switch]$HumanPedals
+    [switch]$HumanPedals,
+    # The laptop serves a steering-only (v1) model instead of a steering+pedal (v2) one.
+    [switch]$SteeringOnlyModel
 )
 
 # Run on the game PC from anywhere: .\scripts\run-ai.ps1 [-Mode Mirror|Motor|Vjoy] [-DashboardHost 0.0.0.0]
@@ -65,7 +67,10 @@ $runtimeArgs = @("-m", "forza_ai.runtime", "--backend", "windows",
     "--torque-limit", $TorqueLimit, "--duration", $Duration, "--status-csv", $status,
     "--steer-gain", $SteerGain, "--target-rate", $TargetRate,
     "--dashboard-host", $DashboardHost, "--dashboard-port", $DashboardPort)
-if ($HumanPedals) {
+if ($SteeringOnlyModel) {
+    # v1 model: no pedal predictions exist, so your pedals always drive.
+    $HumanPedals = $true
+} elseif ($HumanPedals) {
     $runtimeArgs += "--human-pedals"
 } else {
     $runtimeArgs += @("--auto-pedals", "--throttle-cap", $ThrottleCap, "--throttle-rate", $ThrottleRate,

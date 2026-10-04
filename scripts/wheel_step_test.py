@@ -35,8 +35,10 @@ def main():
     #   restart: adapter.set_torque every 10 ms = stop + update + run (what the runtime does now)
     #   update:  start once, then only update the level every 10 ms; re-run without stopping every 100 ms
     #   long:    one stop + run per push with the push's whole duration (like utils/test.py ffb)
+    #   runtime: set_torque_before with the runtime's deadline (wheel sample + 50 ms), so each restarted
+    #            effect lasts only ~40 ms, exactly like the live controller
     push = [(0.4, +args.torque), (1.6, 0.0), (0.4, -args.torque), (1.6, 0.0)]
-    phases = [("restart", "restart", [(1.0, 0.0)] + push), ("update", "update", push), ("long", "long", push)]
+    phases = [("restart100", "restart", [(1.0, 0.0)] + push), ("runtime40", "runtime", push)]
 
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "runs")
     os.makedirs(root, exist_ok=True)
@@ -66,6 +68,8 @@ def main():
                             sdl.SDL_HapticStopEffect(haptic, eid)
                     elif method == "restart":
                         adapter.set_torque(torque)
+                    elif method == "runtime":
+                        adapter.set_torque_before(torque, w.timestamp_ns + 50_000_000)
                     elif method == "update":
                         effect.constant.level, effect.constant.length = level, 200
                         sdl.SDL_HapticUpdateEffect(haptic, eid, effect)
