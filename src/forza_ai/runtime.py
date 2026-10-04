@@ -591,6 +591,8 @@ def main(argv=None):
         if args.backend == "windows" and abs(target) > 15:
             parser.error("stationary Windows placeholder tests are limited to +/-15 degrees")
         policy = SweepPolicy(target, args.sweep_hold) if args.sweep else FixedAnglePolicy(target)
+    if args.auto_pedals and not getattr(policy, 'driving', False):
+        parser.error('--auto-pedals requires a v2 driving model; selected artifact is steering-only')
     reserved = {value for value in (args.takeover_button, args.arm_button, args.route_button) if value is not None}
     if reserved.intersection(mapping):
         parser.error("takeover/arm/route buttons are reserved; don't also map them to game actions")

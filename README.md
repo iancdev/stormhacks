@@ -1,8 +1,8 @@
-# StormHacks — Vision-Based Steering Assist
+# StormHacks — Vision-Based Driving Assist
 
-A driving AI for Forza Horizon 4 that learns from human demonstrations and physically steers a Thrustmaster TMX force-feedback wheel. The human controls throttle and brake and can take over steering.
+A driving AI for Forza Horizon 4 that learns from human demonstrations and physically steers a Thrustmaster TMX force-feedback wheel. A versioned driving model can also control throttle and brake through vJoy; steering-only mode retains human pedals. The driver can take over at any time. See [automatic pedals](docs/AUTOMATIC_PEDALS.md) for training and launch commands.
 
-## Initial scope
+## Original steering-first scope
 
 - One car, one repeatable route, consistent camera and weather.
 - Racing line disabled; moderate human-controlled speed.
@@ -17,7 +17,7 @@ A driving AI for Forza Horizon 4 that learns from human demonstrations and physi
 Game/wheel PC: road crop + speed → LAN → Desktop: CNN inference
 Game/wheel PC: physical controller ← LAN ← Desktop: target angle
 Physical controller → TMX motor → measured angle → vJoy → Forza
-Human pedals → vJoy → Forza
+Human pedals or opt-in v2 CNN pedals → vJoy → Forza
 ```
 
 The physical wheel remains in the steering loop. Direct model-to-vJoy steering can serve as a separate software baseline.

@@ -121,9 +121,9 @@ def _model_files(path):
         raise ProfileError("model_path must be an exported artifact directory containing model.pt and metadata.json")
     metadata = _read_json(path / "metadata.json")
     if (not isinstance(metadata, dict) or type(metadata.get("format_version")) is not int
-            or metadata["format_version"] != 1 or metadata.get("architecture") != "pilotnet_speed_v1"
+            or (metadata["format_version"], metadata.get("architecture")) not in {(1, "pilotnet_speed_v1"), (2, "pilotnet_driving_v2")}
             or metadata.get("image_stage") != "road_crop" or not isinstance(metadata.get("preprocessing"), dict)):
-        raise ProfileError("unsupported model artifact metadata; export a pilotnet_speed_v1 road-crop artifact")
+        raise ProfileError("unsupported model artifact metadata; export a supported v1 steering or v2 driving road-crop artifact")
     return metadata
 
 
@@ -238,7 +238,8 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
             seen_physical.add(physical)
             seen_virtual.add(virtual)
         control = _object(profile.get("control", {}), "control",
-                          {"hz", "policy_hz", "torque_limit", "kp", "kd", "target_rate_deg_s", "target_limit_deg"})
+                          {"hz", "policy_hz", "torque_limit", "kp", "kd", "target_rate_deg_s", "target_limit_deg",
+                           "auto_pedals", "direct_vjoy", "pedal_override"})
         defaults = {"hz": 100, "policy_hz": 30, "torque_limit": 0.15, "kp": 0.008, "kd": 0.001,
                     "target_rate_deg_s": 60, "target_limit_deg": 90}
         config = dict(defaults, **control)
@@ -275,6 +276,15 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
                 "--game-process", game_process, "--telemetry-port", str(telemetry_port),
                 "--takeover-button", str(indices["takeover"]), "--duration", str(duration),
                 "--run-report", str(run_dir / "report.json")]
+        if _boolean(control.get('auto_pedals', False), 'control.auto_pedals'):
+            argv += ['--auto-pedals']
+        if _boolean(control.get('direct_vjoy', False), 'control.direct_vjoy'):
+            argv += ['--direct-vjoy']
+        if 'pedal_override' in control:
+            threshold = _number(control['pedal_override'], 'control.pedal_override', positive=True, maximum=1)
+            if threshold == 1:
+                raise ProfileError('control.pedal_override must be below 1')
+            argv += ['--pedal-override', str(threshold)]
         if mode != "manual":
             argv += ["--" + mode]
         for name in ("arm", "route"):
@@ -380,8 +390,8 @@ def doctor_report(role, *, model_path=None):
         try:
             _model_files(path)
             model["files_and_metadata_valid"] = True
-            from forza_ai.policies.predictor import SteeringPredictor
-            SteeringPredictor(path)
+            from forza_ai.policies.predictor import load_predictor
+            load_predictor(path)
             model["weights_loaded"] = True
         except Exception as error:
             model["error_type"] = type(error).__name__

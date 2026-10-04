@@ -118,3 +118,30 @@ def test_timeout_and_stale_commands_release_auto_pedals():
     a=ExpiredAdapter();r=run(a,DrivingPolicy(),duration=.1,assist=True,auto_pedals=True,direct_vjoy=True)
     assert r['mode']=='fault'
     assert all(s.throttle==0 for _,s in a.writes)
+
+
+def test_integrated_recording_keeps_human_pedals_and_excludes_ai():
+    class Recorder:
+        def __init__(self):self.samples=[];self.stats={}
+        def start(self):pass
+        def check(self):pass
+        def submit(self,wheel,vehicle,frame,mode,**kwargs):self.samples.append((wheel,mode,kwargs['expert']))
+        def close(self,**kwargs):pass
+    recorder=Recorder();policy=DrivingPolicy();policy.requires_camera=True
+    adapter=Adapter('throttle')
+    run(adapter,policy,duration=.35,assist=True,auto_pedals=True,direct_vjoy=True,
+        camera=FakeCamera(),receiver=FakeTelemetry(),recorder=recorder,takeover_settle_ms=10)
+    ai=[(w,e) for w,m,e in recorder.samples if m==ControlMode.ASSIST]
+    assert ai and all(w.throttle==0 and not expert for w,expert in ai)
+    assert any(w.throttle==.5 and expert for w,m,expert in recorder.samples if m==ControlMode.TAKEOVER)
+
+
+def test_v1_server_rejects_v2_client():
+    class SteeringPredictor:
+        def predict(self,pixels,speed):return 0.0
+    server=InferenceServer(SteeringPredictor(),port=0,key=b'test');server.start()
+    p=RemotePolicy(*server.address,key=b'test',driving=True)
+    try:
+        with pytest.raises(ProtocolError,match='version'):
+            p.predict(observation())
+    finally:p.close();server.close()
