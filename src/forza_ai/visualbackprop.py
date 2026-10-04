@@ -6,6 +6,7 @@ The original uses ReLU. Here negative ELU evidence is explicitly omitted.
 No gradients, additional model passes, output-specific or causal attribution.
 """
 import io
+import math
 import threading
 import time
 
@@ -58,14 +59,18 @@ def render_preview(image, maps):
 
 
 class ActivationPreview:
-    """One in-progress render and one replaceable snapshot; capture at most 1 Hz.
+    """One in-progress render and one replaceable snapshot; configurable sampling, zero means uncapped.
 
     Hooks copy only one input plus five reduced maps during an existing forward.
     Rendering/PNG runs on a daemon independently; inference never waits for it.
     begin/finish belong exclusively to the existing model worker. No hooks exist
     unless explicitly constructed. CPU PilotNet only, including wrapped inputs.
     """
-    def __init__(self, predictor):
+    def __init__(self, predictor, *, hz=10.0):
+        if isinstance(hz, bool) or not math.isfinite(hz) or hz < 0:
+            raise ValueError("saliency Hz must be finite and nonnegative (0 = uncapped)")
+        self.interval = 1.0 / hz if hz else 0.0
+        self._last_frame = None
         from torch import nn
         # Input-adjustment wrappers may expose their underlying predictor here.
         core = predictor
@@ -94,8 +99,11 @@ class ActivationPreview:
     def begin(self, identity):
         self._capture = None
         now = time.monotonic()
-        if identity is not None and now >= self._next_capture and not self._closed:
-            self._next_capture = now + 1.0
+        if (identity is not None and now >= self._next_capture and not self._closed
+                and (self._last_frame is None or identity["session"] != self._last_frame[0]
+                     or identity["frame_id"] > self._last_frame[1])):
+            self._last_frame = (identity["session"], identity["frame_id"])
+            self._next_capture = now + self.interval
             self._capture = dict(identity=identity, started=now, maps=[])
 
     def _input(self, module, args):
@@ -137,13 +145,15 @@ class ActivationPreview:
                 if self._closed:
                     return
                 snapshot, self._pending = self._pending, None
+            if time.monotonic() - snapshot['started'] > .5:
+                continue
             try:
                 png, active = render_preview(snapshot['image'], snapshot['maps'])
                 result = (snapshot, png, active)
             except Exception:
                 continue
             with self._condition:
-                if not self._closed:
+                if not self._closed and time.monotonic() - snapshot["started"] <= .5:
                     self._latest = result
 
     def latest(self, session, after_id):
@@ -158,7 +168,7 @@ class ActivationPreview:
         snapshot, png, active = result
         identity = snapshot['identity']
         age_ms = (time.monotonic() - snapshot['started']) * 1000
-        if identity['session'] != session or identity['request_id'] <= after_id or age_ms > 2000:
+        if identity['session'] != session or identity['request_id'] <= after_id or age_ms > 500:
             return None, b''
         metadata = dict(identity, age_ms=age_ms, active=active, prediction=snapshot['prediction'])
         return metadata, png

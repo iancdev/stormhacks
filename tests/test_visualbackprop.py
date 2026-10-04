@@ -77,7 +77,7 @@ def test_zero_maps_no_nan_no_fake_heatmap():
 def test_exact_prediction_input_and_hooks_removed():
     p, obs = predictor(), observation()
     baseline = p.predict(obs.frame.rgb, 20)
-    preview = ActivationPreview(p)
+    preview = ActivationPreview(p, hz=1)
     try:
         preview.begin(dict(session='a' * 32, request_id=1, frame_id=9))
         result = p.predict(obs.frame.rgb, 20)
@@ -160,7 +160,7 @@ def test_authenticated_roundtrip_backward_compat_and_stale(enabled):
             assert snap['state'] == 'ready' and snap['frame_id'] == 1
             assert snap['request_id'] == 1
             preview, png, frame_ns, received = client._preview
-            client._preview = (preview, png, frame_ns - 3_000_000_000, received)
+            client._preview = (preview, png, frame_ns - 600_000_000, received)
             assert client.saliency_snapshot()['state'] == 'stale'
             assert 'png' not in client.saliency_snapshot()
         else:
@@ -210,10 +210,11 @@ def test_dashboard_endpoint_respects_host_and_no_controls_added():
 
 def test_preview_server_can_restart_without_orphan_hooks():
     p = predictor()
-    server = InferenceServer(p, port=0, key=KEY, saliency=True)
+    server = InferenceServer(p, port=0, key=KEY, saliency=True, saliency_hz=0)
     for _ in range(2):
         server.start()
         assert len(p.model._forward_pre_hooks) == 1
+        assert server.preview.interval == 0
         server.close()
         assert len(p.model._forward_pre_hooks) == 0
         assert not server.preview._thread.is_alive()
@@ -232,3 +233,63 @@ def test_opted_client_disabled_server_waits_without_extra_model_work():
     finally:
         client.close()
         server.close()
+
+
+@pytest.mark.parametrize('hz', [0, 5, 10, 120])
+def test_capture_cadence_and_unique_frames(monkeypatch, hz):
+    import forza_ai.visualbackprop as module
+    preview = ActivationPreview(predictor(), hz=hz)
+    clock = [100.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    def begin(request, frame, session='a' * 32):
+        preview.begin(dict(session=session, request_id=request, frame_id=frame))
+        return preview._capture
+    try:
+        assert begin(1, 1) is not None
+        clock[0] += .001
+        assert (begin(2, 2) is not None) == (hz == 0)
+        clock[0] += 1
+        assert begin(3, 3) is not None
+        clock[0] += 1
+        assert begin(4, 3) is None  # duplicate source frame, even with a new request
+        assert begin(5, 1) is None  # no resampling an older source frame
+        assert begin(1, 3, 'b' * 32) is not None  # a new authenticated session
+    finally:
+        preview.close()
+
+
+@pytest.mark.parametrize('hz', [-1, float('nan'), float('inf'), True])
+def test_invalid_rate_rejected_before_hooks(hz):
+    p = predictor()
+    with pytest.raises(ValueError): ActivationPreview(p, hz=hz)
+    with pytest.raises(ValueError): InferenceServer(p, key=KEY, saliency_hz=hz)
+    assert not p.model._forward_pre_hooks
+
+
+def test_slow_renderer_drops_expired_result(monkeypatch):
+    import threading
+    import forza_ai.visualbackprop as module
+    entered, release = threading.Event(), threading.Event()
+    render = module.render_preview
+    def slow(*args):
+        entered.set()
+        assert release.wait(3)
+        return render(*args)
+    monkeypatch.setattr(module, 'render_preview', slow)
+    p, obs = predictor(), observation()
+    preview = ActivationPreview(p, hz=0)
+    try:
+        preview.begin(dict(session='a' * 32, request_id=1, frame_id=1))
+        snapshot = preview._capture
+        preview.finish(p.predict(obs.frame.rgb, 20))
+        assert entered.wait(1)
+        snapshot['started'] -= 1
+        release.set()
+        # A subsequent fresh render proves the worker passed the expired result.
+        preview.begin(dict(session='a' * 32, request_id=2, frame_id=2))
+        preview.finish(p.predict(obs.frame.rgb, 20))
+        result = wait_for(lambda: preview.latest('a' * 32, 0)[0])
+        assert result['request_id'] == 2
+    finally:
+        release.set()
+        preview.close()

@@ -358,7 +358,7 @@ class RemotePolicy:
         metadata, payload, frame_ns, received = latest
         age = max((time.monotonic_ns() - frame_ns) / 1e6,
                   metadata['age_ms'] + (time.monotonic() - received) * 1000)
-        if age > 2000:
+        if age > 500:
             return {'state': 'stale', 'age_ms': age, 'frame_id': metadata['frame_id']}
         return {'state': 'ready', 'age_ms': max(0, age), 'frame_id': metadata['frame_id'],
                 'request_id': metadata['request_id'], 'prediction': metadata['prediction'],

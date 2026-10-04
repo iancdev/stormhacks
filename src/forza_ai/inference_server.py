@@ -1,6 +1,7 @@
 """Authenticated LAN model server; start explicitly on the GPU/inference PC."""
 
 import argparse
+import math
 from forza_ai.contracts import DrivingPrediction
 import secrets
 import select
@@ -36,7 +37,10 @@ class InferenceServer:
     then reports if its daemon worker has not stopped within one second.
     """
 
-    def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0, event_log=None, *, saliency=False):
+    def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0, event_log=None, *, saliency=False, saliency_hz=10.0):
+        if isinstance(saliency_hz, bool) or not math.isfinite(saliency_hz) or saliency_hz < 0:
+            raise ValueError("saliency Hz must be finite and nonnegative")
+        self.saliency_hz = saliency_hz
         self.event_log = event_log
         self._connection_sequence = 0
         self.predictor = predictor
@@ -61,7 +65,7 @@ class InferenceServer:
         self.preview = None
         if saliency:
             from forza_ai.visualbackprop import ActivationPreview
-            self.preview = ActivationPreview(predictor)
+            self.preview = ActivationPreview(predictor, hz=self.saliency_hz)
 
     @property
     def address(self):
@@ -89,7 +93,7 @@ class InferenceServer:
                 return
             if self.preview is not None and self.preview._closed:
                 from forza_ai.visualbackprop import ActivationPreview
-                self.preview = ActivationPreview(self.predictor)
+                self.preview = ActivationPreview(self.predictor, hz=self.saliency_hz)
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 listener.bind((self.host, self.port))
@@ -386,7 +390,9 @@ def main(argv=None):
     parser.add_argument("--cpu-threads", type=int, default=4,
                         help="CPU inference intra-op threads (default 4, measured batch-one setting)")
     parser.add_argument("--timeout", type=float, default=2.0, help="total per-request server I/O deadline, seconds")
-    parser.add_argument("--saliency", action="store_true", help="opt-in 1 Hz positive-ELU VisualBackProp diagnostic (CPU PilotNet)")
+    parser.add_argument("--saliency", action="store_true", help="opt-in positive-ELU VisualBackProp diagnostic (CPU PilotNet)")
+    parser.add_argument("--saliency-hz", type=float, default=10.0,
+                        help="activation capture rate (default 10 Hz; 0 = uncapped unique inference frames)")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--model", help="export directory containing model.pt and metadata.json")
     mode.add_argument("--test-target", type=float, help="explicit fixed angle test; NOT a driving model")
@@ -395,6 +401,8 @@ def main(argv=None):
         parser.error("--cpu-threads must be between 1 and 1024")
     if args.saliency and args.model is None:
         parser.error("--saliency requires --model")
+    if not math.isfinite(args.saliency_hz) or args.saliency_hz < 0:
+        parser.error("--saliency-hz must be finite and nonnegative (0 = uncapped)")
     # Check configuration/key before loading a potentially expensive model.
     key = _key_bytes()
     _ipv4(args.bind)
@@ -410,7 +418,7 @@ def main(argv=None):
         predictor = _FixedPredictor(args.test_target)
     from forza_ai.inference_logging import InferenceLog
     event_log = InferenceLog()
-    server = InferenceServer(predictor, args.bind, args.port, key, args.timeout, event_log=event_log, saliency=args.saliency)
+    server = InferenceServer(predictor, args.bind, args.port, key, args.timeout, event_log=event_log, saliency=args.saliency, saliency_hz=args.saliency_hz)
     try:
         server.start()
         label = "CNN model" if args.model is not None else "FIXED TARGET TEST (not a driving model)"
