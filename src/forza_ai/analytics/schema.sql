@@ -25,6 +25,43 @@ CREATE TABLE IF NOT EXISTS wheel_samples (
 
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS yaw_rate DOUBLE PRECISION;
 ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS gear INTEGER;
+ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS rpm DOUBLE PRECISION;
+ALTER TABLE wheel_samples ADD COLUMN IF NOT EXISTS game_ms BIGINT;
+
+-- Control hand-offs from stream-v1 events.csv: the authoritative takeover record.
+CREATE TABLE IF NOT EXISTS control_events (
+    time          TIMESTAMPTZ NOT NULL,
+    session       TEXT        NOT NULL,
+    control_mode  TEXT        NOT NULL,       -- true runtime mode: manual | assist | takeover | fault
+    training_mode TEXT,                       -- what the recorder labelled for training (assist unless expert)
+    expert        BOOLEAN,
+    reason        TEXT
+);
+
+SELECT create_hypertable('control_events', 'time', if_not_exists => TRUE);
+
+-- One row per runtime run from `--run-report` JSON; the full document is kept for anything not flattened.
+CREATE TABLE IF NOT EXISTS run_reports (
+    session                         TEXT PRIMARY KEY,
+    loaded_at                       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actuation                       TEXT,     -- motor | direct_vjoy; never compare across these
+    duration_s                      DOUBLE PRECISION,
+    ticks                           BIGINT,
+    manual_s                        DOUBLE PRECISION,
+    assist_s                        DOUBLE PRECISION,
+    takeover_s                      DOUBLE PRECISION,
+    fault_s                         DOUBLE PRECISION,
+    human_interventions             INTEGER,
+    interventions_per_assist_minute DOUBLE PRECISION,
+    tracking_rmse_deg               DOUBLE PRECISION,
+    max_abs_torque                  DOUBLE PRECISION,
+    fault_entries                   INTEGER,
+    routes_attempted                INTEGER,
+    routes_completed                INTEGER,
+    routes_aborted                  INTEGER,
+    error                           TEXT,
+    report                          JSONB NOT NULL
+);
 
 SELECT create_hypertable('wheel_samples', 'time', if_not_exists => TRUE);
 

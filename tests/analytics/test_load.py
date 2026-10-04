@@ -90,6 +90,88 @@ class RuntimeRowsTests(unittest.TestCase):
                 load.runtime_rows(path)
 
 
+def write_session(root, completed=True):
+    """Tiny stream-v1 session: 4 wheel samples at 10 ms, 2 telemetry samples, 2 control events."""
+    path = Path(root) / "session-001"
+    (path / "images").mkdir(parents=True)
+    (path / "metadata.json").write_text(json.dumps({"schema_version": 1, "session_id": "run-abc",
+                                                     "clock": "monotonic_ns", "completed": completed}))
+    streams = {
+        # training label is 'assist' for non-expert samples; the true mode is in events.csv
+        "wheel": [(1_000_000_000, "3.0", "0.5", "0.0", "assist"),
+                  (1_010_000_000, "3.5", "0.5", "0.0", "assist"),
+                  (1_020_000_000, "9.0", "0.2", "0.1", "takeover"),
+                  (1_030_000_000, "12.0", "0.2", "0.1", "takeover")],
+        "telemetry": [(1_005_000_000, "20.0", "1", "500", "3000.0", "10"),
+                      (1_025_000_000, "21.0", "1", "520", "3100.0", "40")],
+        "events": [(1_000_000_000, "assist", "assist", "0", "engaged"),
+                   (1_020_000_000, "takeover", "takeover", "1", "takeover_button")],
+    }
+    for name, rows in streams.items():
+        with (path / f"{name}.csv").open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(load.SESSION_FIELDS[name])
+            writer.writerows(rows)
+    (path / "frames.csv").write_text("frame_id,image_path,capture_time_ns\n")
+    return path
+
+
+class SessionRowsTests(unittest.TestCase):
+    END = datetime(2026, 10, 4, 1, 0, tzinfo=timezone.utc)
+
+    def test_wheel_rows_join_telemetry_causally_and_take_mode_from_events(self):
+        with tempfile.TemporaryDirectory() as root:
+            session, rows, events = load.session_rows(write_session(root), end_time=self.END)
+        self.assertEqual(session, "run-abc")
+        self.assertEqual(len(rows), 4)
+        self.assertEqual([row["source"] for row in rows], ["session"] * 4)
+        self.assertEqual(rows[-1]["time"], self.END)
+        self.assertEqual(rows[0]["time"], self.END - timedelta(milliseconds=30))
+        # first wheel sample precedes all telemetry: no speed yet
+        self.assertIsNone(rows[0]["speed_mps"])
+        self.assertIsNone(rows[0]["race_on"])
+        # 1.010 s sees telemetry @1.005; 1.020 s still sees @1.005; 1.030 s sees @1.025
+        self.assertEqual([row["speed_mps"] for row in rows[1:]], [20.0, 20.0, 21.0])
+        self.assertEqual((rows[1]["rpm"], rows[1]["game_ms"], rows[1]["race_on"]), (3000.0, 500, True))
+        self.assertEqual([row["mode"] for row in rows], ["assist", "assist", "takeover", "takeover"])
+        self.assertEqual((rows[2]["steer_deg"], rows[2]["gas"], rows[2]["brake"]), (9.0, 0.2, 0.1))
+        self.assertIsNone(rows[0]["target_deg"])
+
+    def test_events_rows(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, _, events = load.session_rows(write_session(root), end_time=self.END)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(list(events[0]), load.EVENT_COLUMNS)
+        self.assertEqual(events[1]["time"], self.END - timedelta(milliseconds=10))
+        self.assertEqual((events[1]["control_mode"], events[1]["expert"], events[1]["reason"]),
+                         ("takeover", True, "takeover_button"))
+        self.assertFalse(events[0]["expert"])
+
+    def test_true_mode_overrides_training_label(self):
+        """A manual sample not declared expert is written as 'assist' in wheel.csv; events say 'manual'."""
+        with tempfile.TemporaryDirectory() as root:
+            path = write_session(root)
+            (path / "events.csv").write_text("timestamp_ns,control_mode,training_mode,expert,reason\n"
+                                             "1000000000,manual,assist,0,unmarked_manual\n")
+            _, rows, _ = load.session_rows(path, end_time=self.END)
+        self.assertEqual([row["mode"] for row in rows], ["manual"] * 4)
+
+    def test_incomplete_session_refused_unless_allowed(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = write_session(root, completed=False)
+            with self.assertRaises(ValueError):
+                load.session_rows(path)
+            session, rows, _ = load.session_rows(path, session="override", end_time=self.END, allow_incomplete=True)
+        self.assertEqual((session, len(rows)), ("override", 4))
+
+    def test_rejects_foreign_stream_columns(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = write_session(root)
+            (path / "telemetry.csv").write_text("timestamp_ns,speed\n1,2\n")
+            with self.assertRaises(ValueError):
+                load.session_rows(path, end_time=self.END)
+
+
 class FakeCopy:
     def __init__(self, sink):
         self.sink = sink
@@ -138,10 +220,21 @@ class CopyRowsTests(unittest.TestCase):
         rows = [load._row(time=datetime(2026, 10, 3, tzinfo=timezone.utc), session="s", source="runtime", steer_deg=1.0)]
         self.assertEqual(load.copy_rows(conn, rows), 1)
         kinds = [entry[0] for entry in conn.log]
-        self.assertEqual(kinds, ["execute", "copy", "rows"])
+        self.assertEqual(kinds, ["execute", "execute", "copy", "rows"])
         self.assertEqual(conn.log[0][2], ("s", "runtime"))
-        self.assertIn("COPY wheel_samples (time, session, source", conn.log[1][1])
-        self.assertEqual(conn.log[2][1][0][load.COLUMNS.index("steer_deg")], 1.0)
+        self.assertIn("DELETE FROM control_events", conn.log[1][1])
+        self.assertIn("COPY wheel_samples (time, session, source", conn.log[2][1])
+        self.assertEqual(conn.log[3][1][0][load.COLUMNS.index("steer_deg")], 1.0)
+
+    def test_events_are_copied_after_samples(self):
+        conn = FakeConnection()
+        rows = [load._row(time=None, session="s", source="session")]
+        events = [dict(time=None, session="s", control_mode="takeover", training_mode="takeover", expert=True, reason="button")]
+        load.copy_rows(conn, rows, events=events)
+        copies = [entry[1] for entry in conn.log if entry[0] == "copy"]
+        self.assertEqual(len(copies), 2)
+        self.assertIn("COPY control_events (time, session, control_mode, training_mode, expert, reason)", copies[1])
+        self.assertEqual(conn.log[-1][1][0][2], "takeover")
 
     def test_empty_and_append(self):
         conn = FakeConnection()
@@ -161,9 +254,19 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("obs_age_ms", parts[0])  # an inline comment with ';' must not split the table
 
     def test_schema_columns_match_loader(self):
-        table = db.statements()[0]
+        parts = db.statements()
+        table = parts[0]
+        added = {part.split("ADD COLUMN IF NOT EXISTS ")[1].split()[0]
+                 for part in parts if "ADD COLUMN IF NOT EXISTS" in part}
         for column in load.COLUMNS:
-            self.assertIn(f"\n    {column} ", table + " ", column)
+            self.assertTrue(f"\n    {column} " in table + " " or column in added, column)
+        events_table = next(part for part in parts if part.startswith("CREATE TABLE IF NOT EXISTS control_events"))
+        for column in load.EVENT_COLUMNS:
+            self.assertIn(f"\n    {column} ", events_table + " ", column)
+        reports_table = next(part for part in parts if part.startswith("CREATE TABLE IF NOT EXISTS run_reports"))
+        for column in load.REPORT_COLUMNS:
+            self.assertIn(f"\n    {column} ", reports_table + " ", column)
+        self.assertEqual(sum("create_hypertable" in part for part in parts), 2)
 
     def test_database_url_resolution(self):
         with tempfile.TemporaryDirectory() as root:

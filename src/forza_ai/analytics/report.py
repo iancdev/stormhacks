@@ -29,12 +29,40 @@ WHERE (%(session)s::text IS NULL OR session = %(session)s)
 ORDER BY session, bucket
 """
 
+RUNS = """
+SELECT session, actuation, loaded_at,
+       round(duration_s::numeric, 1)                      AS duration_s,
+       round(assist_s::numeric, 1)                        AS assist_s,
+       human_interventions                                AS interventions,
+       round(interventions_per_assist_minute::numeric, 2) AS per_assist_min,
+       round(tracking_rmse_deg::numeric, 2)               AS tracking_rmse_deg,
+       routes_completed || '/' || routes_attempted        AS routes,
+       fault_entries,
+       error
+FROM run_reports
+ORDER BY loaded_at
+"""
+
+CONTROL_EVENTS = """
+SELECT e.session, e.time, e.control_mode, e.expert, e.reason,
+       round(s.steer_deg::numeric, 1) AS steer_deg,
+       round((s.speed_mps * 3.6)::numeric, 1) AS kmh
+FROM control_events e
+LEFT JOIN LATERAL (
+    SELECT steer_deg, speed_mps FROM wheel_samples w
+    WHERE w.session = e.session AND w.time <= e.time
+    ORDER BY w.time DESC LIMIT 1
+) s ON true
+WHERE (%(session)s::text IS NULL OR e.session = %(session)s)
+ORDER BY e.session, e.time
+"""
+
 TAKEOVER_EVENTS = """
 SELECT session, time, steer_deg, target_deg, speed_mps * 3.6 AS kmh
 FROM (
     SELECT *, lag(mode) OVER (PARTITION BY session ORDER BY time) AS previous_mode
     FROM wheel_samples
-    WHERE source = 'runtime'
+    WHERE source IN ('runtime', 'session')
 ) ticks
 WHERE mode = 'takeover' AND previous_mode IS DISTINCT FROM 'takeover'
   AND (%(session)s::text IS NULL OR session = %(session)s)
