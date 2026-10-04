@@ -71,16 +71,23 @@ def runtime_rows(path, session=None, end_time=None):
         raws = list(reader)
     if not raws:
         return session, []
-    end_time = end_time or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-    last_ns = int(raws[-1]["timestamp_ns"])
-    rows = []
-    for raw in raws:
-        offset = timedelta(microseconds=(int(raw["timestamp_ns"]) - last_ns) / 1000)
-        rows.append(_row(time=end_time + offset, session=session, source="runtime", mode=raw["mode"],
-                         steer_deg=_float(raw["actual_angle_deg"]), target_deg=_float(raw["target_angle_deg"]),
-                         predicted_deg=_float(raw.get("requested_angle_deg")), torque=_float(raw["torque"]),
-                         speed_mps=_float(raw.get("speed_mps")), obs_age_ms=_float(raw.get("observation_age_ms"))))
+    at = _anchor(raws, end_time or _mtime(path))
+    rows = [_row(time=at(raw["timestamp_ns"]), session=session, source="runtime", mode=raw["mode"],
+                 steer_deg=_float(raw["actual_angle_deg"]), target_deg=_float(raw["target_angle_deg"]),
+                 predicted_deg=_float(raw.get("requested_angle_deg")), torque=_float(raw["torque"]),
+                 speed_mps=_float(raw.get("speed_mps")), obs_age_ms=_float(raw.get("observation_age_ms")))
+            for raw in raws]
     return session, rows
+
+
+def _mtime(path):
+    return datetime.fromtimestamp(Path(path).stat().st_mtime, timezone.utc)
+
+
+def _anchor(raws, end_time):
+    """Map monotonic nanoseconds onto wall clock so the last sample lands on end_time."""
+    last_ns = int(raws[-1]["timestamp_ns"])
+    return lambda ns: end_time + timedelta(microseconds=(int(ns) - last_ns) / 1000)
 
 
 def _read_stream(path, name):
@@ -90,12 +97,6 @@ def _read_stream(path, name):
         if (reader.fieldnames or [])[:len(required)] != required:
             raise ValueError(f"{name}.csv columns do not match the stream-v1 recorder")
         return list(reader)
-
-
-def _anchor(raws, end_time):
-    """Map monotonic nanoseconds onto wall clock so the last sample lands on end_time."""
-    last_ns = int(raws[-1]["timestamp_ns"])
-    return lambda ns: end_time + timedelta(microseconds=(int(ns) - last_ns) / 1000)
 
 
 def session_rows(path, session=None, end_time=None, allow_incomplete=False):
@@ -116,8 +117,7 @@ def session_rows(path, session=None, end_time=None, allow_incomplete=False):
     events = _read_stream(path, "events")
     if not wheel:
         return session, [], []
-    end_time = end_time or datetime.fromtimestamp((path / "metadata.json").stat().st_mtime, timezone.utc)
-    at = _anchor(wheel, end_time)
+    at = _anchor(wheel, end_time or _mtime(path / "metadata.json"))
     rows, tele_i, event_i, current, mode = [], 0, 0, None, None
     for raw in wheel:
         ns = int(raw["timestamp_ns"])
