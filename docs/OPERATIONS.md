@@ -190,3 +190,24 @@ model-call rate (including retries), duplicate publication and superseded-frame
 counts. These rates cover the worker lifetime, whereas `rates` remains a rolling
 window of capture, successful prediction, and control events. This distinguishes
 new visual information from repeated model calls. No stale-input budget is extended.
+
+The inference server has one fixed model worker and one transport worker. PNG
+decode/model execution cannot trap the accept loop after a client disconnects.
+While a model is still busy, another authenticated request is rejected rather than
+queued or run concurrently. Python model execution cannot be forcibly cancelled;
+a hung worker requires an operator restart, and shutdown reports it after closing
+sockets. Client deadlines and re-arm requirements still apply.
+
+`inference_server --cpu-threads 4` is the default for new model-server starts;
+override it after measuring on the deployment machine. This sets PyTorch intra-op
+threads in that server process only. The existing running server is not retuned.
+A short batch-one FP32 trial on the RTX 5080 laptop (64 held-out crops, 8 warm-ups,
+v2 epoch-2 weights) measured CPU threads 1/2/4/default-24 medians of
+1.502/1.183/0.968/1.041 ms including preprocessing, versus CUDA 1.143 ms including
+H2D/model/D2H. Respective p95 values were 1.834/1.395/1.390/1.500/1.622 ms.
+Therefore CPU remains the inference device. This is a short model-stage benchmark,
+not measured game capture or Ethernet latency. A separate 32-request authenticated
+loopback trial using CPU1 measured 2.980 ms median / 3.483 ms p95 including PNG and
+protocol work. Preprocessing, model weights, FP32 precision and control limits are
+unchanged. Raw Windows evidence is `runs/batch1-latency-20261003` in the isolated
+`stormhacks-driving-b678c33` checkout (local evidence commit `8dc6457`).

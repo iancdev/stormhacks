@@ -144,6 +144,30 @@ class RoundTripTests(unittest.TestCase):
         self.policy.timeout_s = 0.5
         self.assertEqual(self.policy.predict(observation()), -12.75)
 
+    def test_hung_model_does_not_block_reconnect_hello_or_queue_more_inference(self):
+        entered, release = threading.Event(), threading.Event()
+        def blocked(pixels, speed):
+            entered.set()
+            release.wait(2)
+            return 1
+        self.predictor.predict.side_effect = blocked
+        self.policy.timeout_s = .04
+        try:
+            with self.assertRaises(ObservationUnavailable):
+                self.policy.predict(observation())
+            self.assertTrue(entered.is_set())
+            # Hello must be served while the first model call is still blocked.
+            for _ in range(3):
+                with socket.create_connection(self.server.address, timeout=.4) as sock:
+                    sock.settimeout(.4)
+                    hello, _ = receive(sock)
+                    metadata, payload = request(hello["session"])
+                    send(sock, metadata, payload)
+                    self.assertEqual(sock.recv(1), b"")  # busy: reject, don't queue
+            self.assertEqual(self.predictor.predict.call_count, 1)
+        finally:
+            release.set()
+
     def test_close_interrupts_inflight_receive_without_waiting_for_predict_lock(self):
         entered, release = threading.Event(), threading.Event()
         self.predictor.predict.side_effect = lambda p, s: (entered.set(), release.wait(2), 0.0)[-1]
