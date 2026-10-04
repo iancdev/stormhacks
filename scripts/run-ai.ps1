@@ -72,7 +72,7 @@ param(
     # Replay Forza's force feedback (sent to vJoy) on the TMX while YOU drive or after a takeover.
     # 0 = off. Flip -FfbSign to -1 if the wheel pushes the wrong way (calibrate once).
     [ValidateRange(0, 2)]
-    [double]$ForwardFfb = 0.5,
+    [double]$ForwardFfb = 0,
     [ValidateSet(1, -1)]
     [int]$FfbSign = 1,
     # Smooth the replayed force (time constant, ms): less jitter, slightly later road feel. 0 = raw.
