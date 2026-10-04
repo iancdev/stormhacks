@@ -128,7 +128,10 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             receiver.start()
         if camera is not None:
             camera.start()
+        recorder_takes_prediction = False
         if recorder is not None:
+            import inspect
+            recorder_takes_prediction = "prediction" in inspect.signature(recorder.submit).parameters
             recorder.start()
         if dashboard_port is not None:
             from forza_ai.dashboard import Dashboard
@@ -424,7 +427,14 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                       and wheel.timestamp_ns >= expert_after_ns and input_error is None)
             if recorder is not None:
                 recorder.check()
-                recorder.submit(wheel, vehicle, frame, status.mode, expert=expert, reason=status.reason)
+                prediction = None if command is None else (
+                    command.generated_time_ns, command.observation_time_ns, command.target_angle_deg,
+                    status.target_angle_deg, getattr(command, "throttle", None), getattr(command, "brake", None))
+                if recorder_takes_prediction:
+                    recorder.submit(wheel, vehicle, frame, status.mode, expert=expert, reason=status.reason,
+                                    prediction=prediction)
+                else:
+                    recorder.submit(wheel, vehicle, frame, status.mode, expert=expert, reason=status.reason)
             summary.update(ticks=summary["ticks"] + 1,
                            max_abs_torque=max(summary["max_abs_torque"], abs(status.torque)),
                            mode=status.mode.value, reason=status.reason,

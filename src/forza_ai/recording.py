@@ -29,6 +29,8 @@ class _Item:
     mode: ControlMode | str
     expert: bool
     reason: str
+    # (generated_ns, observation_ns, predicted_deg, applied_target_deg, throttle, brake) or None
+    prediction: tuple | None = None
 
 
 class SessionRecorder:
@@ -56,6 +58,10 @@ class SessionRecorder:
         "telemetry": ["timestamp_ns", "speed_mps", "is_race_on", "game_timestamp_ms",
                       "rpm", "steering_input"],
         "events": ["timestamp_ns", "control_mode", "training_mode", "expert", "reason"],
+        # For DAgger analysis only (the training loader never reads it): every AI prediction,
+        # also while the human drives, so corrections can be compared with what the AI wanted.
+        "predictions": ["generated_time_ns", "observation_time_ns", "predicted_angle_deg",
+                        "applied_target_deg", "predicted_throttle", "predicted_brake", "control_mode"],
     }
 
     def __init__(self, destination, session_id=None, metadata=None, queue_size=256):
@@ -157,9 +163,9 @@ class SessionRecorder:
 
     def submit(self, wheel: WheelState, vehicle: VehicleState | None,
                frame: CapturedFrame | None, mode: ControlMode | str,
-               *, expert: bool = False, reason: str = "") -> bool:
+               *, expert: bool = False, reason: str = "", prediction: tuple | None = None) -> bool:
         """Enqueue independent source samples without changing their timestamps."""
-        item = _Item(wheel, vehicle, frame, mode, expert, reason)
+        item = _Item(wheel, vehicle, frame, mode, expert, reason, prediction)
         with self._lock:
             if not self._accepting:
                 return False
@@ -238,6 +244,15 @@ class SessionRecorder:
 
         if item.frame is not None:
             self._write_frame(item.frame, writers["frames"])
+
+        if item.prediction is not None and item.prediction[0] != getattr(self, "_last_prediction_ns", None):
+            generated, observed, angle, applied, throttle, brake = item.prediction
+            self._timestamp(generated, "prediction timestamp")
+            self._timestamp(observed, "prediction observation timestamp")
+            writers["predictions"].writerow((generated, observed, round(float(angle), 3), round(float(applied), 3),
+                                             "" if throttle is None else round(float(throttle), 4),
+                                             "" if brake is None else round(float(brake), 4), mode))
+            self._last_prediction_ns = generated
 
     def _write_frame(self, frame, writer):
         self._timestamp(frame.timestamp_ns, "frame timestamp")

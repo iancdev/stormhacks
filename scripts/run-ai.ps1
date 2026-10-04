@@ -54,7 +54,12 @@ param(
     [ValidateRange(0, 10)]
     [double]$AutoRearmS = 3,
     # The laptop serves a steering-only (v1) model instead of a steering+pedal (v2) one.
-    [switch]$SteeringOnlyModel
+    [switch]$SteeringOnlyModel,
+    # DAgger: record the session (frames, wheel, telemetry, AI predictions). Only your takeover
+    # driving becomes training labels; the first TakeoverSettleMs after each takeover is left out.
+    [switch]$Record,
+    [ValidateRange(0, 2000)]
+    [double]$TakeoverSettleMs = 300
 )
 
 # Run on the game PC from anywhere: .\scripts\run-ai.ps1 [-Mode Mirror|Motor|Vjoy] [-DashboardHost 0.0.0.0]
@@ -90,6 +95,10 @@ if ($SteeringOnlyModel) {
                       "--max-speed-kmh", $MaxSpeedKmh, "--brake-gain", $BrakeGain,
                       "--corner-speed-kmh", $CornerSpeedKmh, "--corner-angle-deg", $CornerAngleDeg)
 }
+if ($Record) {
+    $session = Join-Path $repo ("data/dagger/" + $Mode.ToLower() + "-" + $stamp)
+    $runtimeArgs += @("--record-session", $session, "--takeover-settle-ms", $TakeoverSettleMs)
+}
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
 if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel") }
 # --motor-update-ms/--torque-step: the TMX queues commands sent every 10 ms and falls further behind.
@@ -107,6 +116,7 @@ if ($HumanPedals) { Write-Host "Pedals: YOU drive gas and brake; the AI steers o
 else { Write-Host "AI pedals: throttle cap $ThrottleCap, ramp $ThrottleRate/s, speed cap $(if ($MaxSpeedKmh) { "$MaxSpeedKmh km/h" } else { 'off' }), brake x$BrakeGain, corner limit $(if ($CornerSpeedKmh) { "$CornerSpeedKmh km/h past $CornerAngleDeg deg" } else { 'off' })" }
 Write-Host "Dashboard: http://${DashboardHost}:$DashboardPort  (from the laptop: http://169.254.218.1:$DashboardPort)"
 Write-Host "Log: $status"
+if ($Record) { Write-Host "RECORDING (DAgger) to $session - take over with button $TakeoverButton, correct, re-arm with $ArmButton" }
 Push-Location $repo
 try {
     & $python @runtimeArgs
