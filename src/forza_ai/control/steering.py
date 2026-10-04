@@ -24,10 +24,16 @@ class SteeringConfig:
     max_observation_age_ns: int = 250_000_000
     max_wheel_age_ns: int = 50_000_000
     max_tick_gap_ns: int = 100_000_000
+    # Static-friction compensation: a wheel like the TMX needs ~0.2 torque just to break free,
+    # then moves very freely. Outside the deadband, add a fixed push toward the target on top
+    # of the PD term so small errors still move the wheel while kp stays low. 0 disables it.
+    friction_ff: float = 0.0
+    friction_deadband_deg: float = 1.5
 
     def __post_init__(self):
         for name in ("kp", "kd", "torque_limit", "target_limit_deg",
-                     "target_rate_deg_s", "physical_limit_deg", "velocity_filter_s"):
+                     "target_rate_deg_s", "physical_limit_deg", "velocity_filter_s",
+                     "friction_ff", "friction_deadband_deg"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be finite and nonnegative")
@@ -149,7 +155,10 @@ class SteeringController:
         dt = 0.0 if gap is None else gap / 1e9
         requested = clamp(command.target_angle_deg, self.config.target_limit_deg)
         self.target += clamp(requested - self.target, self.config.target_rate_deg_s * dt)
-        torque = self.config.kp * (self.target - wheel.angle_deg) - self.config.kd * self._velocity
+        error = self.target - wheel.angle_deg
+        torque = self.config.kp * error - self.config.kd * self._velocity
+        if self.config.friction_ff and abs(error) > self.config.friction_deadband_deg:
+            torque += math.copysign(self.config.friction_ff, error)
         return self._status(wheel, clamp(torque, self.config.torque_limit))
 
     def _status(self, wheel: WheelState, torque: float) -> ControlStatus:

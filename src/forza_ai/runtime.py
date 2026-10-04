@@ -518,6 +518,11 @@ def main(argv=None):
     parser.add_argument("--torque-limit", type=float, default=0.15)
     parser.add_argument("--kp", type=float, default=0.008, help="PD gain per physical degree; requires tuning")
     parser.add_argument("--kd", type=float, default=0.001, help="PD damping gain per degree/second")
+    parser.add_argument("--friction", type=float, default=0.0,
+                        help="static-friction compensation: extra torque toward the target when off by more "
+                             "than --friction-deadband degrees (TMX needs ~0.2 to break free); 0 = off")
+    parser.add_argument("--friction-deadband", type=float, default=1.5,
+                        help="degrees of error inside which --friction is not applied")
     parser.add_argument("--target-rate", type=float, default=60.0, help="maximum target slew in degrees/second")
     parser.add_argument("--target-limit", type=float, default=90.0, help="maximum absolute physical target degrees")
     parser.add_argument("--takeover-button", type=int, help="SDL zero-based index, from utils/test.py wheel")
@@ -577,6 +582,7 @@ def main(argv=None):
         if output_path is not None and output_path.exists():
             parser.error(f"output already exists; choose a new path: {output_path}")
     config = SteeringConfig(torque_limit=args.torque_limit, kp=args.kp, kd=args.kd,
+                            friction_ff=args.friction, friction_deadband_deg=args.friction_deadband,
                             target_rate_deg_s=args.target_rate, target_limit_deg=args.target_limit)
     mapping = {}
     for pair in args.button_map:
