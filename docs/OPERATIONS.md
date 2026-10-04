@@ -211,3 +211,22 @@ loopback trial using CPU1 measured 2.980 ms median / 3.483 ms p95 including PNG 
 protocol work. Preprocessing, model weights, FP32 precision and control limits are
 unchanged. Raw Windows evidence is `runs/batch1-latency-20261003` in the isolated
 `stormhacks-driving-b678c33` checkout (local evidence commit `8dc6457`).
+
+### Prediction visual
+
+The dashboard includes a **forward-view schematic**, rendered in the browser from
+existing bounded status snapshots (runtime publication capped at 10 Hz). It is
+not a camera stream or overlay. Steering sign bends the relative curve left or
+right (right positive); its length has no distance or time scale. There is no
+calibrated camera projection, road-wheel ratio, or wheelbase, so it must not be
+used as a planned route or track-boundary estimate. Speed remains a separate
+telemetry readout; no heading or speed-based physical trajectory is invented.
+
+Model steering/throttle/brake are separate from measured physical wheel/pedals
+and virtual pedal output. Missing steering-only model pedals show dashes rather
+than fabricated zeroes. The curve and prediction values disappear when command
+lifetime or source-age limits expire, input is unavailable, or the dashboard is
+stale/offline. Browser elapsed time advances these checks between responses. Polling runs at
+most 10 Hz with one request in flight; full HTTP round-trip time is conservatively
+added to snapshot age. No command lifetime is extended to keep the curve visible.
+There is no extra capture, image encoding, hardware owner, or control-loop I/O.

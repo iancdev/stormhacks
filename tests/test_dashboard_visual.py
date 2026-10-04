@@ -311,7 +311,7 @@ await advance(1);checkFreshness();const stale=viewState(lastData,offline);
 await advance(500);await first;const failed=renders[renders.length-1];
 const retryDelays=[...timers.values()].map(t=>t.at-clockMs);
 checkFreshness();const stillOffline=offline;
-await advance(250);const recovered=renders[renders.length-1];
+await advance(100);const recovered=renders[renders.length-1];
 return {before,stale,failed,retryDelays,stillOffline,recovered,calls,bodyCalls,
     firstAborted:signals[0].aborted,lastReceivedAt};
 """)
@@ -321,13 +321,13 @@ return {before,stale,failed,retryDelays,stillOffline,recovered,calls,bodyCalls,
     assert result["failed"]["offline"] and result["firstAborted"]
     assert not result["failed"]["view"]["arm"]
     assert not result["failed"]["view"]["startRoute"]
-    assert result["retryDelays"] == [250]
+    assert result["retryDelays"] == [100]
     assert result["stillOffline"]
     assert not result["recovered"]["offline"] and not result["recovered"]["isStale"]
     assert result["recovered"]["view"]["arm"] and result["recovered"]["view"]["startRoute"]
     assert result["calls"] == 2
     assert result["bodyCalls"] == (1 if stall == "fetch" else 2)
-    assert result["lastReceivedAt"] == 1250
+    assert result["lastReceivedAt"] == 1100
 
 
 def test_client_freshness_includes_server_age_and_preserves_offline_state():
@@ -370,3 +370,67 @@ return {feedback,aborted:signal.aborted,pending:pendingAction};
     assert "Delivery not confirmed" in message["message"]
     assert "not delivered" not in message["message"]
     assert "runtime state" in message["message"]
+
+
+def visual_status(**changes):
+    status = dict(speed_mps=10, predicted_angle_deg=45, predicted_throttle=.4, predicted_brake=0,
+                  physical_throttle=.2, physical_brake=.1, actual_angle_deg=-10,
+                  prediction_remaining_ms=150, observation_age_ms=30,
+                  input_status='ready', limits=dict(observation_age_ms=250))
+    status.update(changes)
+    return dict(status=status, snapshot_age_ms=0, stale=False)
+
+
+def test_prediction_curve_sign_and_controls_are_distinct():
+    right = client(f'predictionVisual({json.dumps(visual_status())})')
+    left = client(f'predictionVisual({json.dumps(visual_status(predicted_angle_deg=-45))})')
+    assert right['path'].endswith('440 25')
+    assert left['path'].endswith('280 25')
+    assert (right['angle'], right['throttle'], right['physicalAngle'], right['physicalThrottle'], right['physicalBrake']) == (45, 40, -10, 20, 10)
+
+
+@pytest.mark.parametrize('change', [dict(predicted_angle_deg=None), dict(prediction_remaining_ms=0),
+    dict(observation_age_ms=251), dict(input_status='frame_unavailable'), dict(closed=True)])
+def test_prediction_curve_rejects_missing_expired_or_invalid_input(change):
+    view = client(f'predictionVisual({json.dumps(visual_status(**change))})')
+    assert not view['valid'] and not view['path'] and view['angle'] is None
+
+
+def test_prediction_expiry_in_browser_without_new_snapshot():
+    payload = json.dumps(visual_status())
+    assert not client(f'predictionVisual({payload},false,150)')['valid']
+    assert not client(f'predictionVisual({payload},true)')['valid']
+    assert client(f'predictionVisual({payload},false,149)')['valid']
+    assert client(f'predictionVisual({json.dumps(visual_status(predicted_throttle=None))})')['throttle'] is None
+
+
+def test_prediction_fields_survive_snapshot_filter():
+    dashboard = Dashboard(queue.Queue())
+    dashboard.publish(visual_status()['status'])
+    status = dashboard.snapshot()['status']
+    assert status['physical_throttle'] == .2
+    assert status['physical_brake'] == .1
+    assert status['prediction_remaining_ms'] == 150
+
+
+def test_nonfinite_and_out_of_range_predictions_do_not_draw():
+    payload = json.dumps(visual_status())
+    for field, value in [('predicted_angle_deg', 'NaN'), ('predicted_throttle', 'Infinity'), ('predicted_brake', '-.1')]:
+        result = client(f'(()=>{{const d={payload};d.status.{field}={value};return predictionVisual(d)}})()')
+        assert not result['valid'] and result['path'] == ''
+
+def test_snapshot_age_counts_toward_command_and_observation_expiry():
+    payload = visual_status()
+    payload['snapshot_age_ms'] = 140
+    assert not client(f'predictionVisual({json.dumps(payload)},false,10)')['valid']
+    payload = visual_status(observation_age_ms=245)
+    payload['snapshot_age_ms'] = 5
+    assert not client(f'predictionVisual({json.dumps(payload)})')['valid']
+
+
+def test_stationary_or_unknown_speed_hides_curve_but_retains_fresh_prediction():
+    for speed in [0, None]:
+        result = client(f'predictionVisual({json.dumps(visual_status(speed_mps=speed))})')
+        assert result['valid'] and result['angle'] == 45 and result['path'] == ''
+    result = client(f'predictionVisual({json.dumps(visual_status(predicted_brake=.2))})')
+    assert not result['valid'] and result['path'] == ''
