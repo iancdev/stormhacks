@@ -401,4 +401,82 @@ def test_explicit_exclusion_file_uses_original_session_identity(tmp_path):
     rules.write_text('different- # unrelated\n')
     result = import_recording(source, tmp_path / 'accepted', expert_mode='manual', exclude_sessions=rules)
     assert result['accepted'] == 8
-    assert json.loads((tmp_path / 'accepted/metadata.json').read_text())['exclusion_prefixes_checked'] == ['different-']
+    assert 'different-' in json.loads((tmp_path / 'accepted/metadata.json').read_text())['exclusion_prefixes_checked']
+
+
+def test_optional_producer_identity_preserved_without_claiming_verification(tmp_path):
+    source = extended_recording(tmp_path / 'source', cars=True)
+    edit_meta(source, lambda m: m.update(producer_schema='record_py_buffered_20_v1', producer_sha256='ab' * 32))
+    result = import_recording(source, tmp_path / 'out', expert_mode='manual')
+    assert result['provenance']['declared_producer_schema'] == 'record_py_buffered_20_v1'
+    assert result['provenance']['declared_producer_sha256'] == 'ab' * 32
+
+
+@pytest.mark.parametrize('fields,cars', [
+    ({'producer_schema': 'unknown'}, True),
+    ({'producer_schema': 'record_py_buffered_20_v1'}, False),
+    ({'producer_sha256': 'A' * 64}, True),
+    ({'producer_sha256': 'a' * 63}, True),
+    ({'producer_sha256': 123}, True),
+])
+def test_invalid_declared_producer_identity_fails(tmp_path, fields, cars):
+    source = extended_recording(tmp_path / 'source', cars=cars)
+    edit_meta(source, lambda m: m.update(fields))
+    with pytest.raises(ValueError, match='producer_'):
+        import_recording(source, tmp_path / 'out', expert_mode='manual')
+
+
+def test_source_directory_named_hud_preserves_timing_sidecar(tmp_path):
+    source = extended_recording(tmp_path / 'hud', cars=True)
+    (source / 'capture_timing.csv').write_text('frame,retrieved_ns\n' + ''.join(f'{i},{i}\n' for i in range(8)))
+    first = import_recording(source, tmp_path / 'first', expert_mode='manual')
+    source.rename(tmp_path / 'renamed')
+    second = import_recording(tmp_path / 'renamed', tmp_path / 'second', expert_mode='manual')
+    assert first == second
+
+
+@pytest.mark.parametrize('identity', ['20261003_150225', '20261003_152123-extra'])
+def test_checked_in_exclusions_apply_without_cli_flag_and_cannot_be_replaced(tmp_path, identity):
+    source = extended_recording(tmp_path / 'unrelated-folder')
+    edit_meta(source, lambda m: m.update(session=identity))
+    empty_rules = tmp_path / 'empty-rules.txt'
+    empty_rules.write_text('# cannot replace mandatory defaults\n')
+    for rules in [None, empty_rules]:
+        with pytest.raises(ValueError, match='exclusion prefix'):
+            import_recording(source, tmp_path / 'out', expert_mode='manual', exclude_sessions=rules)
+    from forza_ai.data.recording import inspect_recording_for_diagnostics
+    assert inspect_recording_for_diagnostics(source, expert_mode='manual').provenance['diagnostic_only']
+
+
+@pytest.mark.parametrize('identity', ['20261003_150225', '20261003_152123'])
+def test_already_imported_excluded_data_rejected_before_training_or_evaluation(tmp_path, identity):
+    from forza_ai.training.engine import load_checkpoint
+    source = extended_recording(tmp_path / 'source')
+    imported = tmp_path / 'data/session'
+    import_recording(source, imported, expert_mode='manual')
+    # Simulate an old import that passed before today's repository policy.
+    metadata = json.loads((imported / 'metadata.json').read_text())
+    metadata['source_metadata']['session'] = identity
+    (imported / 'metadata.json').write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match='exclusion prefix'):
+        load_sessions(imported.parent)
+    with pytest.raises(ValueError, match='exclusion prefix'):
+        train(imported.parent, tmp_path / 'run', device='cpu')
+    # Evaluation loads the policy before touching any images/model. Supply only
+    # the fields its loader needs; no compute or fabricated validation metrics.
+    from forza_ai.training import engine
+    from unittest.mock import patch
+    with patch.object(engine, 'load_checkpoint', return_value={'alignment': {
+        'label_offset_ns': 0, 'max_wheel_gap_ns': 50_000_000, 'max_telemetry_age_ns': 100_000_000}}):
+        with pytest.raises(ValueError, match='exclusion prefix'):
+            evaluate('unused', imported.parent)
+    assert not (tmp_path / 'run').exists()
+
+
+def test_packaged_policy_matches_repository_and_missing_policy_fails_closed(tmp_path, monkeypatch):
+    from forza_ai.data import exclusions
+    root = Path(__file__).resolve().parents[2]
+    assert (root / 'config/exclude_sessions.txt').read_bytes() == Path(exclusions.__file__).with_name('exclude_sessions.txt').read_bytes()
+    monkeypatch.setattr(exclusions, 'default_policy_path', lambda: tmp_path / 'missing.txt')
+    with pytest.raises(FileNotFoundError):
+        exclusions.enforce_exclusions('20261003_152944')

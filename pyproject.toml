@@ -33,3 +33,6 @@ namespaces = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+"forza_ai.data" = ["exclude_sessions.txt"]
