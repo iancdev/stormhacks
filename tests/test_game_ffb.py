@@ -89,7 +89,22 @@ class JitteryGameForce(RecordingAdapter):
         return 0.3 if self.reads % 2 else -0.1
 
 
-def test_smoothing_removes_jitter_and_keeps_the_average():
+def test_smoothing_removes_jitter_and_keeps_the_average(monkeypatch):
+    # Measure the filter at the requested 100 Hz, independent of host scheduler
+    # jitter. The input alternates on each read, so irregular wall-clock ticks
+    # change the stimulus frequency as well as the smoothing coefficient.
+    import time
+    import forza_ai.runtime as runtime
+    real_sleep = time.sleep
+    class Clock:
+        now = 10.0
+        def sleep(self, seconds):
+            self.now += max(0.0, seconds)
+            real_sleep(0)  # allow the existing policy worker to observe shutdown
+    clock = Clock()
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(runtime.time, "monotonic_ns", lambda: int(clock.now * 1e9))
+    monkeypatch.setattr(runtime.time, "sleep", clock.sleep)
     from forza_ai.control import SteeringConfig
     raw = JitteryGameForce(); run(raw, FixedAnglePolicy(0), duration=.6, assist=False, ffb_scale=1.0,
                                   config=SteeringConfig(torque_limit=0.3))
