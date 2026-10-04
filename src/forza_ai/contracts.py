@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import Enum
+import math
 from typing import Any
 
 
@@ -39,6 +40,8 @@ class SteeringCommand:
     observation_time_ns: int
     valid_until_ns: int
     inference_ms: float | None = None
+    throttle: float | None = None
+    brake: float | None = None
 
 
 @dataclass(frozen=True)
@@ -73,3 +76,19 @@ class ObservationUnavailable(RuntimeError):
 
 class ActuationExpired(RuntimeError):
     """Native preparation outlived the command's absolute actuation deadline."""
+
+
+@dataclass(frozen=True)
+class DrivingPrediction:
+    angle_deg: float
+    throttle: float
+    brake: float
+
+    def __post_init__(self):
+        values = (self.angle_deg, self.throttle, self.brake)
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in values):
+            raise ValueError('driving outputs must be finite numbers')
+        if abs(self.angle_deg) > 450 or not 0 <= self.throttle <= 1 or not 0 <= self.brake <= 1:
+            raise ValueError('driving outputs exceed angle/pedal range')
+        if self.throttle > 0 and self.brake > 0:
+            raise ValueError('simultaneous throttle and brake is not a driving command')

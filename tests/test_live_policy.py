@@ -267,8 +267,8 @@ class LivePolicyTests(unittest.TestCase):
         module = Mock()
         with patch.dict("sys.modules", {"forza_ai.policies.predictor": module}):
             policy = LiveModelPolicy("/model/export")
-        module.SteeringPredictor.assert_called_once_with("/model/export")
-        self.assertIs(policy.predictor, module.SteeringPredictor.return_value)
+        module.load_predictor.assert_called_once_with("/model/export")
+        self.assertIs(policy.predictor, module.load_predictor.return_value)
 
 
 if __name__ == "__main__":

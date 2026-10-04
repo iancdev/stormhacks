@@ -33,6 +33,8 @@ class Sample:
     angle_deg: float
     speed_mps: float
     control_mode: str
+    throttle: float | None = None
+    brake: float | None = None
 
 
 @dataclass
@@ -178,7 +180,11 @@ def load_session(path: Path, alignment: Alignment = Alignment()) -> Session:
             weight = (target - wt[left]) / (wt[right] - wt[left])
             angle = wheel[left]['angle_deg'] * (1 - weight) + wheel[right]['angle_deg'] * weight
         speed = telemetry[bisect_right(tt, captured) - 1]['speed_mps']
-        accepted.append(Sample(image, captured, angle, speed, mode))
+        def pedal(name):
+            if left == right:
+                return wheel[left][name]
+            return wheel[left][name] * (1 - weight) + wheel[right][name] * weight
+        accepted.append(Sample(image, captured, angle, speed, mode, pedal('throttle'), pedal('brake')))
     return Session(path, session_id, accepted, dict(rejected), digest.hexdigest(), group,
                    {'format': 'session_v1', 'clock': 'monotonic_ns'})
 

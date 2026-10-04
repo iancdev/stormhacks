@@ -46,7 +46,7 @@ request while already assisted does not survive a later fault.
 
 ## Live dashboard
 
-`--dashboard-port 8766` serves a loopback-only dashboard at
+`--dashboard-port 8766` serves a dashboard on localhost by default at
 `http://127.0.0.1:8766`. It shows wheel/target/policy angles, source observation
 age, inference duration, control state, intervention count, route markers, and
 recording/transport status. Stale snapshots visibly disable controls. Requests
@@ -68,7 +68,27 @@ request is reported as delivery unconfirmed because the runtime may have queued 
 Keep the game foreground during assisted driving. Inspect the dashboard on a
 second screen without taking focus, or use the physical buttons. Clicking the
 browser causes the foreground guard to disengage AI; an arm request gives you
-time to return to the game. The dashboard is not exposed on the LAN.
+time to return to the game. The default dashboard is not exposed on the LAN.
+
+### Access from another computer
+
+Add `--dashboard-host 0.0.0.0 --dashboard-port 8766` to the existing runtime
+command **on the PC running Forza and the wheel client**. This listens on all
+IPv4 interfaces. Alternatively bind only that PC's specific LAN IPv4 address.
+Open `http://<RACING-PC-LAN-IP>:8766` from the other computer; `0.0.0.0` is a
+listen address, not a browser destination, and the other computer's localhost
+would point at itself. This does not create a dashboard on the inference laptop.
+
+Saved game profiles support `run.dashboard_host` (default `127.0.0.1`) alongside
+`run.dashboard_port`. The existing launcher passes both to the runtime. Adding
+the bind option does not change `manual`, `shadow`, or `assist` engagement mode.
+
+LAN binding makes dashboard status and its existing controls reachable by other
+computers on that network. There is no new login system. Exact Host/Origin and
+CSRF-token checks remain: for wildcard binding, accepted Host/Origin must match
+the actual local destination IP and port of the connection, never an arbitrary
+header value. DNS aliases and wildcard Host/Origin values are not accepted.
+No broad CORS or firewall changes are made by this option.
 
 Local simulation preview (no wheel or dataset):
 

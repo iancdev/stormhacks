@@ -121,9 +121,9 @@ def _model_files(path):
         raise ProfileError("model_path must be an exported artifact directory containing model.pt and metadata.json")
     metadata = _read_json(path / "metadata.json")
     if (not isinstance(metadata, dict) or type(metadata.get("format_version")) is not int
-            or metadata["format_version"] != 1 or metadata.get("architecture") != "pilotnet_speed_v1"
+            or (metadata["format_version"], metadata.get("architecture")) not in {(1, "pilotnet_speed_v1"), (2, "pilotnet_driving_v2")}
             or metadata.get("image_stage") != "road_crop" or not isinstance(metadata.get("preprocessing"), dict)):
-        raise ProfileError("unsupported model artifact metadata; export a pilotnet_speed_v1 road-crop artifact")
+        raise ProfileError("unsupported model artifact metadata; export a supported v1 steering or v2 driving road-crop artifact")
     return metadata
 
 
@@ -162,7 +162,7 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
     if role == "game" and "policy" in profile:
         raise ProfileError("game profiles use remote inference; policy belongs to the desktop profile")
     base = profile_path.parent
-    run = _object(profile.get("run", {}), "run", {"output_dir", "duration_s", "interactive", "dashboard_port"})
+    run = _object(profile.get("run", {}), "run", {"output_dir", "duration_s", "interactive", "dashboard_port", "dashboard_host"})
     if role == "desktop" and set(run) - {"output_dir"}:
         raise ProfileError("desktop run only accepts output_dir")
     output = _path(run.get("output_dir", "../runs"), "run.output_dir", base)
@@ -238,7 +238,8 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
             seen_physical.add(physical)
             seen_virtual.add(virtual)
         control = _object(profile.get("control", {}), "control",
-                          {"hz", "policy_hz", "torque_limit", "kp", "kd", "target_rate_deg_s", "target_limit_deg"})
+                          {"hz", "policy_hz", "torque_limit", "kp", "kd", "target_rate_deg_s", "target_limit_deg",
+                           "auto_pedals", "direct_vjoy", "pedal_override"})
         defaults = {"hz": 100, "policy_hz": 30, "torque_limit": 0.15, "kp": 0.008, "kd": 0.001,
                     "target_rate_deg_s": 60, "target_limit_deg": 90}
         config = dict(defaults, **control)
@@ -253,6 +254,11 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
         telemetry_port = _number(telemetry.get("port", 9999), "telemetry.port", minimum=1, maximum=65535, integer=True)
         duration = _number(run.get("duration_s", 0), "run.duration_s")
         interactive = _boolean(run.get("interactive", True), "run.interactive")
+        from forza_ai.dashboard import validate_dashboard_host
+        try:
+            dashboard_host = validate_dashboard_host(run.get("dashboard_host", "127.0.0.1"))
+        except ValueError as error:
+            raise ProfileError(str(error)) from error
         dashboard_port = run.get("dashboard_port")
         if dashboard_port is not None:
             _number(dashboard_port, "run.dashboard_port", minimum=1, maximum=65535, integer=True)
@@ -275,6 +281,15 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
                 "--game-process", game_process, "--telemetry-port", str(telemetry_port),
                 "--takeover-button", str(indices["takeover"]), "--duration", str(duration),
                 "--run-report", str(run_dir / "report.json")]
+        if _boolean(control.get('auto_pedals', False), 'control.auto_pedals'):
+            argv += ['--auto-pedals']
+        if _boolean(control.get('direct_vjoy', False), 'control.direct_vjoy'):
+            argv += ['--direct-vjoy']
+        if 'pedal_override' in control:
+            threshold = _number(control['pedal_override'], 'control.pedal_override', positive=True, maximum=1)
+            if threshold == 1:
+                raise ProfileError('control.pedal_override must be below 1')
+            argv += ['--pedal-override', str(threshold)]
         if mode != "manual":
             argv += ["--" + mode]
         for name in ("arm", "route"):
@@ -288,7 +303,7 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
         if interactive:
             argv += ["--interactive"]
         if dashboard_port is not None:
-            argv += ["--dashboard-port", str(dashboard_port)]
+            argv += ["--dashboard-port", str(dashboard_port), "--dashboard-host", dashboard_host]
         if duration > 0 and duration * config["hz"] <= 100_000:
             argv += ["--status-csv", str(run_dir / "control.csv")]
         if recording_dir is not None:
@@ -380,8 +395,8 @@ def doctor_report(role, *, model_path=None):
         try:
             _model_files(path)
             model["files_and_metadata_valid"] = True
-            from forza_ai.policies.predictor import SteeringPredictor
-            SteeringPredictor(path)
+            from forza_ai.policies.predictor import load_predictor
+            load_predictor(path)
             model["weights_loaded"] = True
         except Exception as error:
             model["error_type"] = type(error).__name__

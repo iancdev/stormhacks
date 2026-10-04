@@ -365,7 +365,8 @@ def _aligned_session(path, source_meta, rows, alignment, fingerprint_files):
         if telemetry_age + 50_000 > alignment.max_telemetry_age_ns:
             rejected['stale_telemetry'] += 1
             continue
-        accepted.append(Sample(image, time_ns, float(row['steer_deg']), float(row['speed_mps']), 'manual'))
+        accepted.append(Sample(image, time_ns, float(row['steer_deg']), float(row['speed_mps']), 'manual',
+                               float(row['gas']), float(row['brake'])))
     profile = _buffer_profile(source_meta, list(rows[0]))
     provenance = {
         'format': FORMAT, 'timing': TIMING, 'source_session': source_meta['session'],

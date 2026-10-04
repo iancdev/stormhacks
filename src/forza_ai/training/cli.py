@@ -44,6 +44,7 @@ def main(argv=None):
     train.add_argument('--seed', type=int, default=7)
     train.add_argument('--workers', type=int, default=0)
     train.add_argument('--cache-mib', type=int, default=512, help='CPU tensor budget in MiB (default 512); full train+validation set must fit; 0 disables; disabled with workers > 0')
+    train.add_argument('--task', choices=['steering', 'driving'], default='steering')
     train.add_argument('--device', default='auto')
     _alignment(train)
     resume = subs.add_parser('resume', help='continue to a total epoch count using saved configuration')
@@ -79,7 +80,7 @@ def main(argv=None):
             from forza_ai.training import engine
             if args.command == 'train':
                 config = engine.TrainConfig(args.batch_size, args.learning_rate,
-                                            args.validation_fraction, args.seed, args.workers, args.cache_mib)
+                                            args.validation_fraction, args.seed, args.workers, args.cache_mib, args.task)
                 engine.train(args.data, args.output, args.epochs, config, _get_alignment(args), device=args.device)
             elif args.command == 'resume':
                 engine.train(args.data, args.checkpoint.parent, args.epochs,

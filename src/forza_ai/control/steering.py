@@ -72,6 +72,13 @@ class SteeringController:
     def command_error(self, command: SteeringCommand | None, now_ns: int) -> str | None:
         if command is None:
             return "no_command"
+        if command.throttle is not None or command.brake is not None:
+            if any(v is None or not isinstance(v, (int, float)) or isinstance(v, bool)
+                   or not math.isfinite(v) or not 0 <= v <= 1
+                   for v in (command.throttle, command.brake)):
+                return "invalid_pedal_target"
+            if command.throttle > 0 and command.brake > 0:
+                return "conflicting_pedal_targets"
         if not math.isfinite(command.target_angle_deg):
             return "invalid_target"
         if not 0 <= now_ns - command.generated_time_ns <= self.config.max_command_age_ns:

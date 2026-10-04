@@ -277,6 +277,33 @@ class WindowsAdapter:
             self._check_vjoy(self._sdk.SetBtn(physical in state.buttons, self._vjoy_id, virtual),
                              "set button")
 
+    def write_virtual_state_before(self, state: WheelState, deadline_ns: int) -> None:
+        if type(deadline_ns) is not int or deadline_ns < 0:
+            raise ValueError('deadline_ns must be nonnegative integer nanoseconds')
+        self._ensure_open()
+        def check():
+            if time.monotonic_ns() >= deadline_ns:
+                raise ActuationExpired('virtual control command expired')
+        try:
+            x = vjoy_steering(state.angle_deg, self.rotation_deg)
+            y, z = vjoy_pedal(state.brake), vjoy_pedal(state.throttle)
+            if not state.connected or (state.throttle > 0 and state.brake > 0):
+                raise ValueError('invalid driving virtual state')
+            # Release the previously active pedal before applying the other.
+            axes = [(self._vjoy.HID_USAGE_X, x)]
+            pedals = [(self._vjoy.HID_USAGE_Y, y), (self._vjoy.HID_USAGE_Z, z)]
+            axes.extend(sorted(pedals, key=lambda pair: pair[1], reverse=True))
+            for usage, value in axes:
+                check()
+                self._axis(usage, value)
+            for physical, virtual in self.button_map.items():
+                check()
+                self._check_vjoy(self._sdk.SetBtn(physical in state.buttons, self._vjoy_id, virtual), 'set button')
+            check()
+        except BaseException:
+            self._reset_virtual()
+            raise
+
     def _reset_virtual(self) -> None:
         # Continue every neutralization step if one fails. A missing X axis or a
         # failed ResetVJD must not prevent an otherwise writable pedal release.
