@@ -41,8 +41,15 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         config=None, status_path=None, command_queue=None, camera=None, shadow=False,
         progress=False, arm_timeout=5.0, foreground_guard=None, arm_button=None,
         route_button=None, recorder=None, record_manual=False, takeover_settle_ms=100.0,
-        dashboard_port=None, run_report=None):
+        dashboard_port=None, run_report=None, direct_vjoy=False, direct_override_deg=20.0):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
+
+    ``direct_vjoy`` is the fallback when the motor path is unavailable: while
+    assistance is engaged, the controller's rate-limited target is written to
+    vJoy steering instead of driving the motor (torque stays zero), only after
+    the same freshness/foreground/telemetry checks that gate motor output.
+    Otherwise the measured wheel is forwarded as usual. Turning the physical
+    wheel beyond ``direct_override_deg`` is a human takeover, like the button.
 
     Zero duration runs until interrupted. Status output is optional and buffered
     in memory during this finite test; unlimited runs cannot collect an unbounded
@@ -54,7 +61,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
     rows = []
     summary = {"ticks": 0, "max_abs_torque": 0.0, "mode": "manual", "reason": "not_started",
                "hardware_mode": "simulation" if isinstance(adapter, SimulatedAdapter) else "physical adapter",
-               "autocenter_disabled_confirmed": getattr(adapter, "autocenter_disabled_confirmed", None)}
+               "autocenter_disabled_confirmed": getattr(adapter, "autocenter_disabled_confirmed", None),
+               "actuation": "direct_vjoy" if direct_vjoy else "motor"}
     error_text = None
     progress_worker = None
     dashboard = None
@@ -81,6 +89,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             raise ValueError("arm_timeout must be positive")
         if shadow and assist:
             raise ValueError("shadow mode cannot engage assistance")
+        if direct_vjoy and (not math.isfinite(direct_override_deg) or direct_override_deg <= 0):
+            raise ValueError("direct_override_deg must be finite and positive")
         model_mode = bool(getattr(policy, "requires_camera", False))
         if model_mode and (camera is None or receiver is None):
             raise ValueError("model policy requires a camera and telemetry receiver")
@@ -188,6 +198,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             explicit_takeover = takeover_button is not None and takeover_button in rising
             wheel_arm = arm_button is not None and arm_button in rising
             wheel_route = route_button is not None and route_button in rising
+            if direct_vjoy and engaged_at_tick_start and abs(wheel.angle_deg) > direct_override_deg:
+                # No motor holds the wheel in this mode, so a deliberate turn is the human taking over.
+                takeover = explicit_takeover = True
             local_events = []
             if wheel_arm and not shadow:
                 local_events.append("arm")
@@ -234,8 +247,10 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
                 pending_arm = False
             now_ns = time.monotonic_ns()
             status = controller.step(wheel, command, now_ns, engage=engage_now, takeover=takeover)
-            # Always forward the measured inputs, never the model's target angle.
-            adapter.write_virtual_state(wheel)
+            # Motor mode: always forward the measured inputs, never the model's target angle.
+            # Direct-vJoy mode writes after validation below, where motor output would happen.
+            if not direct_vjoy:
+                adapter.write_virtual_state(wheel)
             live_error = None
             if model_mode and status.mode == ControlMode.ASSIST:
                 current_vehicle = receiver.latest()
@@ -266,6 +281,10 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if output_error:
                 controller.disengage(output_error, fault=wheel_error is not None)
                 status = replace(status, mode=controller.mode, reason=output_error, torque=0.0)
+            if direct_vjoy:
+                status = replace(status, torque=0.0)
+                steer = status.target_angle_deg if status.mode == ControlMode.ASSIST else wheel.angle_deg
+                adapter.write_virtual_state(replace(wheel, angle_deg=steer))
             try:
                 if status.torque:
                     # Absolute host validity reaches the last native boundary;
@@ -457,6 +476,11 @@ def main(argv=None):
     parser.add_argument("--takeover-settle-ms", type=float, default=100.0,
                         help="exclude the first milliseconds after a human takeover from training labels")
     parser.add_argument("--quiet", action="store_true", help="suppress twice-per-second progress")
+    parser.add_argument("--direct-vjoy", action="store_true",
+                        help="FALLBACK: send the AI's steering to vJoy instead of turning the wheel motor "
+                             "(motor/haptics never opened; Forza must use the vJoy wheel)")
+    parser.add_argument("--override-deg", type=float, default=20.0,
+                        help="--direct-vjoy only: turning the wheel past this many degrees takes over")
     args = parser.parse_args(argv)
     live_mode = bool(args.model or args.inference_host)
     needs_camera = live_mode or args.record_session is not None
@@ -534,7 +558,8 @@ def main(argv=None):
         if args.takeover_button is None:
             parser.error("Windows runs require --takeover-button with your verified SDL button index")
         from forza_ai.hardware import WindowsAdapter
-        adapter = WindowsAdapter(torque_limit=args.torque_limit, button_map=mapping)
+        adapter = WindowsAdapter(torque_limit=args.torque_limit, button_map=mapping,
+                                 use_motor=not args.direct_vjoy)
     else:
         adapter = SimulatedAdapter(torque_limit=args.torque_limit)
     receiver = None
@@ -546,6 +571,9 @@ def main(argv=None):
         adapter.close()
         raise
     print(f"Policy: {policy.name}")
+    if args.direct_vjoy:
+        print(f"FALLBACK direct-vJoy: AI steering goes to vJoy, the wheel motor is not used. "
+              f"Turn the wheel past {args.override_deg:g} deg or press the takeover button to take over.")
     try:
         result = run(adapter, policy, duration=duration, control_hz=args.control_hz,
                      policy_hz=args.policy_hz, assist=args.assist,
@@ -555,7 +583,8 @@ def main(argv=None):
                      arm_button=args.arm_button, route_button=args.route_button,
                      recorder=recorder, record_manual=args.record_manual,
                      takeover_settle_ms=args.takeover_settle_ms,
-                     dashboard_port=args.dashboard_port, run_report=args.run_report)
+                     dashboard_port=args.dashboard_port, run_report=args.run_report,
+                     direct_vjoy=args.direct_vjoy, direct_override_deg=args.override_deg)
     except KeyboardInterrupt:
         print("Stopped; hardware cleanup requested.")
         return 0

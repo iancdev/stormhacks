@@ -51,7 +51,12 @@ class WindowsAdapter:
         effect_ttl_ms: int = 100,
         button_map: Mapping[int, int] | None = None,
         vjoy_device_id: int = 1,
+        use_motor: bool = True,
     ):
+        # use_motor=False (direct-vJoy fallback): never open SDL haptics, so the
+        # fallback works even when the motor/FFB path is what failed. Only zero
+        # torque is then accepted.
+        self.use_motor = bool(use_motor)
         self.rotation_deg = rotation(rotation_deg)
         self.torque_limit = finite(torque_limit, "torque_limit")
         sdl_force_level(0, self.torque_limit)
@@ -116,7 +121,8 @@ class WindowsAdapter:
             raise self._sdl_error("Enable background wheel events")
         # Initialize separately so a partial initialization can always be undone.
         self._sdl_flags = []
-        for flag in (sdl.SDL_INIT_JOYSTICK, sdl.SDL_INIT_HAPTIC):
+        flags = (sdl.SDL_INIT_JOYSTICK, sdl.SDL_INIT_HAPTIC) if self.use_motor else (sdl.SDL_INIT_JOYSTICK,)
+        for flag in flags:
             self._check_sdl(sdl.SDL_InitSubSystem(flag), "SDL_InitSubSystem")
             self._sdl_flags.append(flag)
             self._sdl_initialized = True
@@ -144,6 +150,8 @@ class WindowsAdapter:
         self._check_sdl(self._button_count, "SDL_JoystickNumButtons")
         if any(button >= self._button_count for button in self.button_map):
             raise HardwareError("button_map references a missing TMX button")
+        if not self.use_motor:
+            return
         self._haptic = sdl.SDL_HapticOpenFromJoystick(self._joystick)
         if not self._haptic:
             raise self._sdl_error("SDL_HapticOpenFromJoystick")
@@ -205,7 +213,8 @@ class WindowsAdapter:
         sdl = self._sdl
         sdl.SDL_JoystickUpdate()  # void API
         if not self._attached():
-            self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
+            if self._haptic:
+                self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
             return WheelState(now_ns, 0, 0, 0, connected=False)
         # Axis/button APIs use zero for both a valid value and failure. Clear and
         # inspect SDL's error around the whole group, after validating indices.
@@ -216,7 +225,8 @@ class WindowsAdapter:
         if sdl.SDL_GetError():
             raise self._sdl_error("Read TMX axes/buttons")
         if not self._attached():
-            self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
+            if self._haptic:
+                self._check_sdl(sdl.SDL_HapticStopAll(self._haptic), "SDL_HapticStopAll")
             return WheelState(now_ns, 0, 0, 0, connected=False)
         return WheelState(now_ns, steering_degrees(axes[0], self.rotation_deg),
                           pedal_fraction(axes[2]), pedal_fraction(axes[1]), buttons)
@@ -283,6 +293,10 @@ class WindowsAdapter:
 
     def _set_torque(self, torque: float, *, deadline_ns=_NO_DEADLINE) -> None:
         self._ensure_open()
+        if not self.use_motor:
+            if sdl_force_level(torque, self.torque_limit):
+                raise HardwareError("motor output disabled (direct-vJoy mode)")
+            return
         sdl = self._sdl
         try:
             level = sdl_force_level(torque, self.torque_limit)
