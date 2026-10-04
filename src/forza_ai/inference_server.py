@@ -36,7 +36,7 @@ class InferenceServer:
     then reports if its daemon worker has not stopped within one second.
     """
 
-    def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0, event_log=None):
+    def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0, event_log=None, *, saliency=False):
         self.event_log = event_log
         self._connection_sequence = 0
         self.predictor = predictor
@@ -58,6 +58,10 @@ class InferenceServer:
         self._model_ready = threading.Condition()
         self._job = None
         self._model_thread = None
+        self.preview = None
+        if saliency:
+            from forza_ai.visualbackprop import ActivationPreview
+            self.preview = ActivationPreview(predictor)
 
     @property
     def address(self):
@@ -83,6 +87,9 @@ class InferenceServer:
                 if self._stop.is_set():
                     raise RuntimeError("inference server is still stopping")
                 return
+            if self.preview is not None and self.preview._closed:
+                from forza_ai.visualbackprop import ActivationPreview
+                self.preview = ActivationPreview(self.predictor)
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 listener.bind((self.host, self.port))
@@ -90,6 +97,8 @@ class InferenceServer:
                 listener.settimeout(0.1)
             except BaseException:
                 listener.close()
+                if self.preview is not None:
+                    self.preview.close()
                 raise
             self._stop.clear()
             self._listener = listener
@@ -199,6 +208,7 @@ class InferenceServer:
         _send_message(client, self._key, {"version": self.version, "kind": "hello", "session": session},
                       b"", time.monotonic() + self.timeout_s)
         next_request_id = 1
+        last_preview_id = 0
         while not self._stop.is_set():
             deadline = time.monotonic() + self.timeout_s
             state.update(phase='receive', request_started=time.monotonic(),
@@ -206,7 +216,8 @@ class InferenceServer:
             request, payload = _receive_message(_ReceiveCounter(client, state), self._key, deadline)
             state['phase'] = 'protocol'
             state['authenticated'] = True
-            _schema(request, "predict", {"session", "request_id", "nonce", "frame_id", "speed_mps", "width", "height"}, self.version)
+            wants_preview = request.get("kind") == "predict_preview"
+            _schema(request, "predict_preview" if wants_preview else "predict", {"session", "request_id", "nonce", "frame_id", "speed_mps", "width", "height"}, self.version)
             if (_session(request["session"]) != session
                     or _identifier(request["request_id"], positive=True) != next_request_id):
                 raise ProtocolError("replayed or incorrectly ordered request")
@@ -221,7 +232,8 @@ class InferenceServer:
             if state['requests'] == 1:
                 self._log('authenticated_protocol_ready', state)
             state['phase'] = 'model_wait'
-            prediction = self._predict(client, payload, request["width"], request["height"], speed, deadline, state)
+            prediction = self._predict(client, payload, request["width"], request["height"], speed, deadline, state,
+                                       dict(session=session, request_id=request["request_id"], frame_id=frame_id) if wants_preview else None)
             state['phase'] = 'prediction_validation'
             if self.driving != isinstance(prediction, DrivingPrediction):
                 raise ProtocolError('predictor output does not match protocol version')
@@ -231,8 +243,16 @@ class InferenceServer:
                         "frame_id": frame_id, "angle_deg": angle}
             if self.driving:
                 response.update(throttle=prediction.throttle, brake=prediction.brake)
+            preview_payload = b""
+            if wants_preview:
+                response['kind'] = 'prediction_preview'
+                response['preview'] = None
+                if self.preview is not None:
+                    response['preview'], preview_payload = self.preview.latest(session, last_preview_id)
+                    if response['preview'] is not None:
+                        last_preview_id = response['preview']['request_id']
             state['phase'] = 'send'
-            _send_message(client, self._key, response, b"", deadline)
+            _send_message(client, self._key, response, preview_payload, deadline)
             state['responses'] += 1
             if state['responses'] == 1:
                 self._log('first_prediction_sent', state)
@@ -257,9 +277,13 @@ class InferenceServer:
                     job['phase'] = 'model'
                     model_started = time.monotonic()
                     job['model_started'] = model_started
+                    if self.preview is not None:
+                        self.preview.begin(job.get("preview_identity"))
                     try:
                         job["prediction"] = self.predictor.predict(pixels, job["speed"])
                     finally:
+                        if self.preview is not None:
+                            self.preview.finish(job.get('prediction'))
                         job['model_ms'] = (time.monotonic() - model_started) * 1000
             except Exception as error:
                 job["error"] = error
@@ -268,8 +292,8 @@ class InferenceServer:
                     self._job = None
                     job["done"].set()
 
-    def _predict(self, client, payload, width, height, speed, deadline, state):
-        job = dict(payload=payload, width=width, height=height, speed=speed,
+    def _predict(self, client, payload, width, height, speed, deadline, state, preview_identity=None):
+        job = dict(payload=payload, width=width, height=height, speed=speed, preview_identity=preview_identity,
                    deadline=deadline, done=threading.Event(), cancelled=threading.Event(), phase='model_wait')
         with self._model_ready:
             if self._job is not None:
@@ -334,6 +358,8 @@ class InferenceServer:
                 self._model_thread.join(timeout=1.0)
                 if self._model_thread.is_alive():
                     raise RuntimeError("inference worker is still running; sockets have been closed")
+            if self.preview is not None:
+                self.preview.close()
             self._listener = None
             self._thread = None
             self._model_thread = None
@@ -360,12 +386,15 @@ def main(argv=None):
     parser.add_argument("--cpu-threads", type=int, default=4,
                         help="CPU inference intra-op threads (default 4, measured batch-one setting)")
     parser.add_argument("--timeout", type=float, default=2.0, help="total per-request server I/O deadline, seconds")
+    parser.add_argument("--saliency", action="store_true", help="opt-in 1 Hz positive-ELU VisualBackProp diagnostic (CPU PilotNet)")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--model", help="export directory containing model.pt and metadata.json")
     mode.add_argument("--test-target", type=float, help="explicit fixed angle test; NOT a driving model")
     args = parser.parse_args(argv)
     if not 1 <= args.cpu_threads <= 1024:
         parser.error("--cpu-threads must be between 1 and 1024")
+    if args.saliency and args.model is None:
+        parser.error("--saliency requires --model")
     # Check configuration/key before loading a potentially expensive model.
     key = _key_bytes()
     _ipv4(args.bind)
@@ -381,7 +410,7 @@ def main(argv=None):
         predictor = _FixedPredictor(args.test_target)
     from forza_ai.inference_logging import InferenceLog
     event_log = InferenceLog()
-    server = InferenceServer(predictor, args.bind, args.port, key, args.timeout, event_log=event_log)
+    server = InferenceServer(predictor, args.bind, args.port, key, args.timeout, event_log=event_log, saliency=args.saliency)
     try:
         server.start()
         label = "CNN model" if args.model is not None else "FIXED TARGET TEST (not a driving model)"

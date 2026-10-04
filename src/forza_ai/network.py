@@ -9,6 +9,8 @@ integrity/authentication, not encryption; use this link on a trusted LAN.
 
 from __future__ import annotations
 
+import base64
+from collections import OrderedDict
 import hashlib
 import hmac
 import io
@@ -232,7 +234,11 @@ class RemotePolicy:
     requires_camera = True
     name = "remote CNN steering policy"
 
-    def __init__(self, host, port=8765, key=None, timeout_s=0.2, driving=False):
+    def __init__(self, host, port=8765, key=None, timeout_s=0.2, driving=False, *, saliency=False):
+        self.saliency = bool(saliency)
+        self._preview = None
+        self._preview_frames = OrderedDict()
+        self._preview_lock = threading.Lock()
         self.driving = bool(driving)
         self.version = 2 if self.driving else VERSION
         if self.driving:
@@ -295,20 +301,39 @@ class RemotePolicy:
                     sock = self._connect(deadline)
                 request_id = self._request_id
                 nonce = secrets.token_hex(16)  # also reject old server transcripts
-                request = {"version": self.version, "kind": "predict", "session": self._session,
+                request = {"version": self.version, "kind": "predict_preview" if self.saliency else "predict", "session": self._session,
                            "request_id": request_id, "nonce": nonce, "frame_id": frame_id, "speed_mps": speed,
                            "width": width, "height": height}
+                if self.saliency:
+                    self._preview_frames[request_id] = (frame_id, frame.timestamp_ns)
+                    if len(self._preview_frames) > 256:
+                        self._preview_frames.popitem(last=False)
                 _send_message(sock, self._key, request, png, deadline)
                 response, payload = _receive_message(sock, self._key, deadline)
                 fields = {"session", "request_id", "nonce", "frame_id", "angle_deg"}
                 if self.driving:
                     fields |= {"throttle", "brake"}
-                _schema(response, "prediction", fields, self.version)
-                if (payload or _session(response["session"]) != self._session
+                if self.saliency:
+                    fields.add('preview')
+                _schema(response, "prediction_preview" if self.saliency else "prediction", fields, self.version)
+                if ((payload and not self.saliency) or _session(response["session"]) != self._session
                         or _identifier(response["request_id"], positive=True) != request_id
                         or _session(response["nonce"]) != nonce
                         or _identifier(response["frame_id"]) != frame_id):
                     raise ProtocolError("response does not match the in-flight observation")
+                if self.saliency:
+                    from forza_ai.preview_transport import validate_preview
+                    try:
+                        validate_preview(response['preview'], payload, self._session, request_id)
+                        preview = response['preview']
+                        if preview is not None:
+                            source = self._preview_frames.get(preview['request_id'])
+                            if source is None or source[0] != preview['frame_id']:
+                                raise ValueError('preview does not match original local frame')
+                            with self._preview_lock:
+                                self._preview = (preview, payload, source[1], time.monotonic())
+                    except ValueError as error:
+                        raise ProtocolError(str(error)) from error
                 angle = _angle(response["angle_deg"])
                 _remaining(deadline)
                 with self._state_lock:
@@ -323,6 +348,22 @@ class RemotePolicy:
                 self._disconnect()
                 raise
 
+    def saliency_snapshot(self):
+        if not self.saliency:
+            return {'state': 'disabled'}
+        with self._preview_lock:
+            latest = self._preview
+        if latest is None:
+            return {'state': 'waiting'}
+        metadata, payload, frame_ns, received = latest
+        age = max((time.monotonic_ns() - frame_ns) / 1e6,
+                  metadata['age_ms'] + (time.monotonic() - received) * 1000)
+        if age > 2000:
+            return {'state': 'stale', 'age_ms': age, 'frame_id': metadata['frame_id']}
+        return {'state': 'ready', 'age_ms': max(0, age), 'frame_id': metadata['frame_id'],
+                'request_id': metadata['request_id'], 'prediction': metadata['prediction'],
+                'active': metadata['active'], 'png': base64.b64encode(payload).decode('ascii')}
+
     def _disconnect(self):
         with self._state_lock:
             sock = self._socket
@@ -330,6 +371,9 @@ class RemotePolicy:
         self._close_socket(sock)
         self._session = None
         self._request_id = 1
+        self._preview_frames.clear()
+        with self._preview_lock:
+            self._preview = None
 
     @staticmethod
     def _close_socket(sock):
@@ -344,6 +388,8 @@ class RemotePolicy:
         # Do not wait behind predict's serialization lock or a blocked recv.
         with self._state_lock:
             self._closed = True
+            with self._preview_lock:
+                self._preview = None
             sock = self._socket
             self._socket = None
         self._close_socket(sock)

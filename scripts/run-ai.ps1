@@ -57,6 +57,8 @@ param(
     [double]$PedalOverride = 0.05,
     # AI steers only; you drive the gas and brake (pressing them does not take over).
     [switch]$HumanPedals,
+    # Requires a compatible inference server also explicitly started with --saliency.
+    [switch]$Saliency,
     # Re-engage automatically after a network blip (timeout / late prediction) within this many
     # seconds; never after a human takeover, pause or fault. 0 = off (press ARM again).
     [ValidateRange(0, 10)]
@@ -124,6 +126,7 @@ if ($Record) {
     $session = Join-Path $repo ("data/dagger/" + $Mode.ToLower() + "-" + $stamp)
     $runtimeArgs += @("--record-session", $session, "--takeover-settle-ms", $TakeoverSettleMs)
 }
+if ($Saliency) { $runtimeArgs += "--saliency" }
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
 if ($Mode -eq "Mirror") {
     $runtimeArgs += @("--direct-vjoy", "--mirror-wheel")

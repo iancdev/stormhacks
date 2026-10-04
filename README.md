@@ -49,6 +49,7 @@ The tested hardware diagnostic is in `utils/test.py`. Training, recorder import,
 - [Colab notebook](notebooks/train_colab.ipynb)
 - [Primary two-PC setup: desktop training/inference and game/wheel control](docs/TWO_PC_SETUP.md)
 - [Operator controls, dashboard, correction recording, and reports](docs/OPERATIONS.md)
+- [Opt-in model-input and VisualBackProp activation dashboard](SALIENCY.md)
 - [Saved deployment profiles and launchers](configs/README.md)
 - [Harness review and verified fixes](docs/HARNESS_REVIEW.md) — all four confirmed code findings addressed; hardware acceptance remains.
 - [Driving analytics on Tiger Data](docs/ANALYTICS.md)

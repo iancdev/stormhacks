@@ -29,3 +29,6 @@ Thumbs.db
 *.egg-info/
 build/
 dist/
+
+# Generated synthetic dashboard QA images and reports
+/artifacts/saliency/

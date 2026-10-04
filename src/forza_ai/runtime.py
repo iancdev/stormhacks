@@ -136,7 +136,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             recorder.start()
         if dashboard_port is not None:
             from forza_ai.dashboard import Dashboard
-            dashboard = Dashboard(events, host=dashboard_host, port=dashboard_port)
+            dashboard = Dashboard(events, host=dashboard_host, port=dashboard_port,
+                                  saliency_source=getattr(policy, "saliency_snapshot", None))
             dashboard.start()
             if dashboard.address[0] == "0.0.0.0":
                 print(f"Dashboard listening on 0.0.0.0:{dashboard.address[1]}; "
@@ -688,6 +689,7 @@ def main(argv=None):
                              "and pressing them does not take over")
     parser.add_argument("--pedal-override", type=float, default=0.05,
                         help="physical pedal fraction that takes over (default .05)")
+    parser.add_argument("--saliency", action="store_true", help="request opt-in activation previews from a compatible inference server")
     parser.add_argument("--inference-port", type=int, default=8765)
     parser.add_argument("--network-timeout", type=float, default=0.2, help="total request deadline in seconds")
     parser.add_argument("--target-angle", type=float, default=None, help="fixed target, or positive sweep amplitude; default 5")
@@ -756,6 +758,8 @@ def main(argv=None):
                         help="observe only, for --shadow while Forza reads the TMX directly: never acquire or "
                              "write vJoy (otherwise Forza sees a duplicate controller) and never open the motor")
     args = parser.parse_args(argv)
+    if args.saliency and not args.inference_host:
+        parser.error("--saliency requires --inference-host")
     if args.mirror_wheel and not args.direct_vjoy:
         parser.error("--mirror-wheel requires --direct-vjoy")
     if args.no_vjoy and not args.shadow:
@@ -820,7 +824,7 @@ def main(argv=None):
             parser.error("--target-angle cannot be combined with a driving model")
         if args.inference_host:
             from forza_ai.network import RemotePolicy
-            policy = RemotePolicy(args.inference_host, port=args.inference_port, timeout_s=args.network_timeout, driving=args.auto_pedals or args.human_pedals)
+            policy = RemotePolicy(args.inference_host, port=args.inference_port, timeout_s=args.network_timeout, driving=args.auto_pedals or args.human_pedals, saliency=args.saliency)
         else:
             from forza_ai.policies.live import LiveModelPolicy
             policy = LiveModelPolicy(args.model)
