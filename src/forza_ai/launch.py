@@ -256,7 +256,7 @@ def build_plan(profile_path, *, expected_role=None, assist=False, run_id=None):
         interactive = _boolean(run.get("interactive", True), "run.interactive")
         from forza_ai.dashboard import validate_dashboard_host
         try:
-            dashboard_host = validate_dashboard_host(run.get("dashboard_host", "127.0.0.1"))
+            dashboard_host = validate_dashboard_host(run.get("dashboard_host", "0.0.0.0"))
         except ValueError as error:
             raise ProfileError(str(error)) from error
         dashboard_port = run.get("dashboard_port")

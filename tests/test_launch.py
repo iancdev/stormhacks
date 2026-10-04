@@ -415,7 +415,7 @@ def test_v2_model_profile(tmp_path, desktop):
     assert '--model' in launch.build_plan(save(tmp_path, desktop), run_id='v2').argv
 
 
-@pytest.mark.parametrize('host', ['0.0.0.0', '192.168.1.3', '169.254.72.151'])
+@pytest.mark.parametrize('host', ['0.0.0.0', '127.0.0.1', '192.168.1.3', '169.254.72.151'])
 def test_dashboard_bind_host_profile(tmp_path, game, host):
     game['run'].update(dashboard_port=8766, dashboard_host=host)
     plan = launch.build_plan(save(tmp_path, game), run_id='dashboard-host')
@@ -425,8 +425,15 @@ def test_dashboard_bind_host_profile(tmp_path, game, host):
 
 def test_dashboard_profile_host_default_and_invalid_hosts(tmp_path, game):
     game['run']['dashboard_port'] = 8766
-    assert value_after(launch.build_plan(save(tmp_path, game), run_id='default'), '--dashboard-host') == '127.0.0.1'
+    assert value_after(launch.build_plan(save(tmp_path, game), run_id='default'), '--dashboard-host') == '0.0.0.0'
     for host in ['http://192.168.1.3', 'evil.example', '224.0.0.1', '255.255.255.255', None]:
         game['run']['dashboard_host'] = host
         with pytest.raises(launch.ProfileError, match='dashboard host'):
             launch.build_plan(save(tmp_path, game), run_id='invalid')
+
+
+def test_dashboard_disabled_profile_does_not_gain_listener(tmp_path, game):
+    game['run']['dashboard_port'] = None
+    plan = launch.build_plan(save(tmp_path, game), run_id='no-dashboard')
+    assert '--dashboard-port' not in plan.argv
+    assert '--dashboard-host' not in plan.argv

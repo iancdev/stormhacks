@@ -68,18 +68,19 @@ request is reported as delivery unconfirmed because the runtime may have queued 
 Keep the game foreground during assisted driving. Inspect the dashboard on a
 second screen without taking focus, or use the physical buttons. Clicking the
 browser causes the foreground guard to disengage AI; an arm request gives you
-time to return to the game. The default dashboard is not exposed on the LAN.
+time to return to the game. When enabled, the client dashboard listens on all IPv4 interfaces by default.
+Use `--dashboard-host 127.0.0.1` to restrict it to the client PC.
 
 ### Access from another computer
 
-Add `--dashboard-host 0.0.0.0 --dashboard-port 8766` to the existing runtime
+Add `--dashboard-port 8766` to the existing runtime
 command **on the PC running Forza and the wheel client**. This listens on all
 IPv4 interfaces. Alternatively bind only that PC's specific LAN IPv4 address.
 Open `http://<RACING-PC-LAN-IP>:8766` from the other computer; `0.0.0.0` is a
 listen address, not a browser destination, and the other computer's localhost
 would point at itself. This does not create a dashboard on the inference laptop.
 
-Saved game profiles support `run.dashboard_host` (default `127.0.0.1`) alongside
+Saved game profiles support `run.dashboard_host` (default `0.0.0.0`) alongside
 `run.dashboard_port`. The existing launcher passes both to the runtime. Adding
 the bind option does not change `manual`, `shadow`, or `assist` engagement mode.
 

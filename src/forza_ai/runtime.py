@@ -42,7 +42,7 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         progress=False, arm_timeout=5.0, foreground_guard=None, arm_button=None,
         route_button=None, recorder=None, record_manual=False, takeover_settle_ms=100.0,
         dashboard_port=None, run_report=None, direct_vjoy=False, direct_override_deg=20.0,
-        auto_pedals=False, pedal_override=0.05, dashboard_host="127.0.0.1"):
+        auto_pedals=False, pedal_override=0.05, dashboard_host="0.0.0.0"):
     """Own the adapter lifecycle, including cleanup on I/O or policy exceptions.
 
     ``direct_vjoy`` is the fallback when the motor path is unavailable: while
@@ -532,8 +532,8 @@ def main(argv=None):
     parser.add_argument("--game-process", default="ForzaHorizon4.exe", help="foreground EXE required for live input")
     parser.add_argument("--status-csv", type=Path)
     parser.add_argument("--run-report", type=Path, help="bounded-memory metrics JSON, also for unlimited runs")
-    parser.add_argument("--dashboard-host", default="127.0.0.1",
-                        help="dashboard bind IP; 0.0.0.0 listens on all IPv4 interfaces (default localhost)")
+    parser.add_argument("--dashboard-host", default="0.0.0.0",
+                        help="dashboard bind IP; default 0.0.0.0 (all IPv4); use 127.0.0.1 for localhost")
     parser.add_argument("--dashboard-port", type=int, help="local browser dashboard port (0 selects a free port)")
     parser.add_argument("--record-session", type=Path, help="new session directory for integrated training data")
     parser.add_argument("--record-manual", action="store_true", help="declare initial manual driving as expert data")
