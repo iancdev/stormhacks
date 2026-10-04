@@ -129,3 +129,33 @@ def test_mirror_wheel_requires_direct_vjoy():
     import pytest
     with pytest.raises(ValueError):
         run(RecordingAdapter(), FixedAnglePolicy(5.0), duration=0.1, assist=True, mirror_wheel=True)
+
+
+class PullingAdapter(RecordingAdapter):
+    """After `start` reads, a human drags the wheel away at `rate` deg per read (10 ms)."""
+    def __init__(self, start, rate):
+        super().__init__(); self.start, self.rate = start, rate
+    def read_state(self, now_ns):
+        state = super().read_state(now_ns)
+        if self.reads >= self.start:
+            self.angle = (self.reads - self.start) * self.rate
+            state = super().read_state(now_ns)
+        return state
+
+
+def test_fast_grab_takes_over_quickly_when_pulled_against_the_motor():
+    import time
+    adapter = PullingAdapter(start=60, rate=-1.0)            # pulled left 100 deg/s, AI wants +5
+    t0 = time.monotonic()
+    summary = run(adapter, FixedAnglePolicy(5.0), duration=1.5, assist=True, direct_vjoy=True,
+                  mirror_wheel=True, mirror_fast_grab_deg=15)
+    assert summary["mode"] == ControlMode.TAKEOVER.value and summary["reason"] == "manual_takeover"
+    takeover_read = next(i for i, w in enumerate(adapter.writes) if w < -5)   # vJoy follows the human
+    assert takeover_read - 60 < 40                           # well under the old ~1.5 s (150 reads)
+
+
+def test_fast_grab_ignores_a_wheel_converging_on_the_target():
+    adapter = RecordingAdapter()                             # motor brings the wheel toward +40 deg
+    summary = run(adapter, FixedAnglePolicy(40.0), duration=1.5, assist=True, direct_vjoy=True,
+                  mirror_wheel=True, mirror_fast_grab_deg=15)
+    assert summary["mode"] == ControlMode.ASSIST.value

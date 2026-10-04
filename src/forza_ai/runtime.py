@@ -43,7 +43,8 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         route_button=None, recorder=None, record_manual=False, takeover_settle_ms=100.0,
         dashboard_port=None, run_report=None, direct_vjoy=False, direct_override_deg=20.0,
         auto_pedals=False, pedal_override=0.05, dashboard_host="0.0.0.0",
-        mirror_wheel=False, mirror_grab_deg=30.0, mirror_grab_s=0.3,
+        mirror_wheel=False, mirror_grab_deg=30.0, mirror_grab_s=0.3, mirror_fast_grab_deg=0.0,
+        mirror_fast_grab_s=0.08,
         throttle_cap=1.0, throttle_rate=0.0, max_speed_kmh=0.0,
         brake_gain=1.0, corner_speed_kmh=0.0, corner_angle_deg=15.0, corner_brake=0.6,
         auto_rearm_s=0.0):
@@ -173,6 +174,9 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
         previous_buttons = None
         previous_pedal_pressed = False
         grab_started_ns = None
+        # Fast grab: a lagging motor moves the wheel TOWARD the AI's angle; a human pulling moves it
+        # AWAY, against the motor. Far enough off and still moving away for a moment = takeover.
+        grab_away_since_ns, previous_deviation = None, None
         # Damped AI throttle (auto pedals): capped, ramps up at throttle_rate per second, drops at
         # once, and is cut above max_speed_kmh. Starts from zero at every engagement.
         ai_throttle, ai_throttle_ns = 0.0, None
@@ -242,17 +246,31 @@ def run(adapter, policy, *, duration=5.0, control_hz=100.0, policy_hz=30.0,
             if direct_vjoy and engaged_at_tick_start and mirror_wheel:
                 # The motor turns the wheel to mirror the AI, so a turn alone isn't a takeover; holding
                 # the wheel far from where the AI is turning it, for a moment, is.
-                if abs(wheel.angle_deg - controller.target) > mirror_grab_deg:
+                deviation = abs(wheel.angle_deg - controller.target)
+                if deviation > mirror_grab_deg:
                     grab_started_ns = grab_started_ns or time.monotonic_ns()
                     if time.monotonic_ns() - grab_started_ns >= mirror_grab_s * 1e9:
                         takeover = explicit_takeover = True
                 else:
                     grab_started_ns = None
+                if mirror_fast_grab_deg:
+                    # Judge the wheel's own motion, not the gap: a fast-moving AI target can widen the
+                    # gap while the motor is still pulling the wheel toward it.
+                    error = controller.target - wheel.angle_deg
+                    step = 0.0 if previous_deviation is None else wheel.angle_deg - previous_deviation
+                    moving_away = deviation > mirror_fast_grab_deg and step * error < 0 and abs(step) > 0.02
+                    if moving_away:
+                        grab_away_since_ns = grab_away_since_ns or time.monotonic_ns()
+                        if time.monotonic_ns() - grab_away_since_ns >= mirror_fast_grab_s * 1e9:
+                            takeover = explicit_takeover = True
+                    elif deviation <= mirror_fast_grab_deg or step * error > 0:
+                        grab_away_since_ns = None
+                previous_deviation = wheel.angle_deg       # previous wheel angle, for its direction
             elif direct_vjoy and engaged_at_tick_start and abs(wheel.angle_deg) > direct_override_deg:
                 # No motor holds the wheel in this mode, so a deliberate turn is the human taking over.
                 takeover = explicit_takeover = True
             if not engaged_at_tick_start:
-                grab_started_ns = None
+                grab_started_ns = grab_away_since_ns = previous_deviation = None
             pedal_pressed = auto_pedals and not shadow and max(wheel.throttle, wheel.brake) >= pedal_override
             if pedal_pressed:
                 takeover = True
@@ -666,6 +684,9 @@ def main(argv=None):
     parser.add_argument("--mirror-wheel", action="store_true",
                         help="with --direct-vjoy: Forza follows the AI through vJoy AND the motor turns the "
                              "wheel to mirror it (display only); grabbing the wheel takes over")
+    parser.add_argument("--mirror-fast-grab-deg", type=float, default=0.0,
+                        help="--mirror-wheel: also take over when the wheel is this far from the AI's angle "
+                             "and still being pulled away (against the motor) for 0.08 s; 0 = off")
     parser.add_argument("--mirror-grab-deg", type=float, default=30.0,
                         help="--mirror-wheel: holding the wheel this far from the AI's angle for 0.3 s takes over")
     parser.add_argument("--no-vjoy", action="store_true",
@@ -797,6 +818,7 @@ def main(argv=None):
                      dashboard_port=args.dashboard_port, run_report=args.run_report,
                      direct_vjoy=args.direct_vjoy, direct_override_deg=args.override_deg,
                      mirror_wheel=args.mirror_wheel, mirror_grab_deg=args.mirror_grab_deg,
+                     mirror_fast_grab_deg=args.mirror_fast_grab_deg,
                      throttle_cap=args.throttle_cap, throttle_rate=args.throttle_rate,
                      max_speed_kmh=args.max_speed_kmh, brake_gain=args.brake_gain,
                      corner_speed_kmh=args.corner_speed_kmh, corner_angle_deg=args.corner_angle_deg,

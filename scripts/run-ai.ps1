@@ -58,6 +58,10 @@ param(
     # DAgger: record the session (frames, wheel, telemetry, AI predictions). Only your takeover
     # driving becomes training labels; the first TakeoverSettleMs after each takeover is left out.
     [switch]$Record,
+    # Mirror: grabbing the wheel takes over once it is this far from the AI's angle and still being
+    # pulled away for 0.08 s (the old 30 deg / 0.3 s rule took 1-1.5 s against the motor). 0 = old rule only.
+    [ValidateRange(0, 90)]
+    [double]$FastGrabDeg = 15,
     [ValidateRange(0, 2000)]
     [double]$TakeoverSettleMs = 300
 )
@@ -100,7 +104,7 @@ if ($Record) {
     $runtimeArgs += @("--record-session", $session, "--takeover-settle-ms", $TakeoverSettleMs)
 }
 if ($Mode -eq "Vjoy") { $runtimeArgs += "--direct-vjoy" }
-if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel") }
+if ($Mode -eq "Mirror") { $runtimeArgs += @("--direct-vjoy", "--mirror-wheel", "--mirror-fast-grab-deg", $FastGrabDeg) }
 # --motor-update-ms/--torque-step: the TMX queues commands sent every 10 ms and falls further behind.
 if ($Mode -ne "Vjoy") { $runtimeArgs += @("--kp", $Kp, "--kd", $Kd, "--friction", $Friction,
                                           "--motor-update-ms", 30, "--torque-step", 0.02) }
