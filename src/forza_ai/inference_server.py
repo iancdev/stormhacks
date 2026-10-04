@@ -9,9 +9,23 @@ import threading
 import time
 
 from forza_ai.network import (
-    VERSION, ProtocolError, _angle, _decode_png, _identifier, _ipv4, _key_bytes,
+    VERSION, AuthenticationError, ProtocolError, _angle, _decode_png, _identifier, _ipv4, _key_bytes,
     _port, _receive_message, _remaining, _schema, _send_message, _session, _speed, _timeout,
 )
+
+
+class _ReceiveCounter:
+    """Observe byte counts only; socket deadlines and framing remain unchanged."""
+    def __init__(self, client, state):
+        self.client, self.state = client, state
+
+    def settimeout(self, value):
+        self.client.settimeout(value)
+
+    def recv(self, size):
+        data = self.client.recv(size)
+        self.state['received_bytes'] += len(data)
+        return data
 
 
 class InferenceServer:
@@ -22,7 +36,9 @@ class InferenceServer:
     then reports if its daemon worker has not stopped within one second.
     """
 
-    def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0):
+    def __init__(self, predictor, host="127.0.0.1", port=8765, key=None, timeout_s=2.0, event_log=None):
+        self.event_log = event_log
+        self._connection_sequence = 0
         self.predictor = predictor
         self.driving = getattr(predictor, "driving", False) is True
         self.version = 2 if self.driving else VERSION
@@ -99,11 +115,47 @@ class InferenceServer:
                     self._running = False
                 raise
 
+    def _log(self, event, state):
+        if self.event_log is None:
+            return
+        try:
+            elapsed = max(time.monotonic() - state['started'], 1e-9)
+            fields = {key: state[key] for key in (
+                'connection_id', 'peer_ip', 'peer_port', 'phase', 'cause',
+                'authenticated', 'requests', 'responses', 'received_bytes', 'completed_model_calls', 'model_elapsed_ms')}
+            fields.update(protocol_version=self.version, duration_ms=round(elapsed * 1000, 3),
+                          response_hz=round(state['responses'] / elapsed, 3),
+                          model_mean_ms=round(state['model_total_ms'] / max(state['completed_model_calls'], 1), 3),
+                          model_max_ms=round(state['model_max_ms'], 3),
+                          request_ms=round((time.monotonic() - state['request_started']) * 1000, 3),
+                          timeout_ms=self.timeout_s * 1000)
+            self.event_log.emit(event, **fields)
+        except Exception:
+            pass  # diagnostics must never alter protocol/control behavior
+
+    @staticmethod
+    def _close_cause(error, state):
+        if state['cause']:
+            return state['cause']
+        if isinstance(error, AuthenticationError):
+            return 'authentication_failed'
+        if isinstance(error, TimeoutError):
+            if state['phase'] == 'receive' and state['received_bytes'] == state['receive_start_bytes']:
+                return 'idle_timeout'
+            return 'timeout'
+        if isinstance(error, ConnectionError):
+            return 'peer_eof_or_reset'
+        if isinstance(error, ProtocolError):
+            return 'protocol_error'
+        if isinstance(error, OSError):
+            return 'transport_error'
+        return 'internal_error'
+
     def _serve(self, listener):
         try:
             while not self._stop.is_set():
                 try:
-                    client, _ = listener.accept()
+                    client, peer = listener.accept()
                 except socket.timeout:
                     continue
                 except OSError as error:
@@ -111,17 +163,28 @@ class InferenceServer:
                         with self._lock:
                             self._last_error = error
                     break
+                self._connection_sequence += 1
+                now = time.monotonic()
+                state = dict(connection_id=self._connection_sequence, peer_ip=peer[0], peer_port=peer[1],
+                             started=now, request_started=now, next_summary=now + 5,
+                             phase='hello', cause=None, authenticated=False, requests=0, responses=0,
+                             received_bytes=0, receive_start_bytes=0, completed_model_calls=0, model_elapsed_ms=0.0,
+                             model_total_ms=0.0, model_max_ms=0.0)
+                self._log('connection_open', state)
                 with self._lock:
                     self._client = client
                 try:
                     client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     if not self._stop.is_set():
-                        self._serve_client(client)
+                        self._serve_client(client, state)
                 except Exception as error:
+                    state['cause'] = 'server_stopping' if self._stop.is_set() else self._close_cause(error, state)
                     if not self._stop.is_set():
                         with self._lock:
                             self._last_error = error
                 finally:
+                    state['cause'] = state['cause'] or ('server_stopping' if self._stop.is_set() else 'completed')
+                    self._log('connection_close', state)
                     client.close()
                     with self._lock:
                         self._client = None
@@ -131,14 +194,18 @@ class InferenceServer:
                 self._running = False
                 self._address = None
 
-    def _serve_client(self, client):
+    def _serve_client(self, client, state):
         session = secrets.token_hex(16)
         _send_message(client, self._key, {"version": self.version, "kind": "hello", "session": session},
                       b"", time.monotonic() + self.timeout_s)
         next_request_id = 1
         while not self._stop.is_set():
             deadline = time.monotonic() + self.timeout_s
-            request, payload = _receive_message(client, self._key, deadline)
+            state.update(phase='receive', request_started=time.monotonic(),
+                         receive_start_bytes=state['received_bytes'])
+            request, payload = _receive_message(_ReceiveCounter(client, state), self._key, deadline)
+            state['phase'] = 'protocol'
+            state['authenticated'] = True
             _schema(request, "predict", {"session", "request_id", "nonce", "frame_id", "speed_mps", "width", "height"}, self.version)
             if (_session(request["session"]) != session
                     or _identifier(request["request_id"], positive=True) != next_request_id):
@@ -150,7 +217,12 @@ class InferenceServer:
             if self._stop.is_set():
                 return
             next_request_id += 1
-            prediction = self._predict(client, payload, request["width"], request["height"], speed, deadline)
+            state['requests'] += 1
+            if state['requests'] == 1:
+                self._log('authenticated_protocol_ready', state)
+            state['phase'] = 'model_wait'
+            prediction = self._predict(client, payload, request["width"], request["height"], speed, deadline, state)
+            state['phase'] = 'prediction_validation'
             if self.driving != isinstance(prediction, DrivingPrediction):
                 raise ProtocolError('predictor output does not match protocol version')
             angle = _angle(prediction.angle_deg if self.driving else prediction)
@@ -159,7 +231,14 @@ class InferenceServer:
                         "frame_id": frame_id, "angle_deg": angle}
             if self.driving:
                 response.update(throttle=prediction.throttle, brake=prediction.brake)
+            state['phase'] = 'send'
             _send_message(client, self._key, response, b"", deadline)
+            state['responses'] += 1
+            if state['responses'] == 1:
+                self._log('first_prediction_sent', state)
+            if time.monotonic() >= state['next_summary']:
+                self._log('connection_summary', state)
+                state['next_summary'] = time.monotonic() + 5
 
     def _infer(self):
         """One model owner, at most one job, never a queue of disconnected clients."""
@@ -171,10 +250,17 @@ class InferenceServer:
                 job = self._job
             try:
                 _remaining(job["deadline"])
+                job['phase'] = 'decode'
                 pixels = _decode_png(job["payload"], job["width"], job["height"])
                 _remaining(job["deadline"])
                 if not self._stop.is_set() and not job["cancelled"].is_set():
-                    job["prediction"] = self.predictor.predict(pixels, job["speed"])
+                    job['phase'] = 'model'
+                    model_started = time.monotonic()
+                    job['model_started'] = model_started
+                    try:
+                        job["prediction"] = self.predictor.predict(pixels, job["speed"])
+                    finally:
+                        job['model_ms'] = (time.monotonic() - model_started) * 1000
             except Exception as error:
                 job["error"] = error
             finally:
@@ -182,11 +268,12 @@ class InferenceServer:
                     self._job = None
                     job["done"].set()
 
-    def _predict(self, client, payload, width, height, speed, deadline):
+    def _predict(self, client, payload, width, height, speed, deadline, state):
         job = dict(payload=payload, width=width, height=height, speed=speed,
-                   deadline=deadline, done=threading.Event(), cancelled=threading.Event())
+                   deadline=deadline, done=threading.Event(), cancelled=threading.Event(), phase='model_wait')
         with self._model_ready:
             if self._job is not None:
+                state['cause'] = 'busy'
                 raise ProtocolError("inference busy; no queued work accepted")
             self._job = job
             self._model_ready.notify()
@@ -201,15 +288,26 @@ class InferenceServer:
                 if readable:
                     peek = client.recv(1, socket.MSG_PEEK)
                     if not peek:
+                        state['cause'] = 'peer_eof'
                         raise OSError("inference client disconnected")
+                    state['cause'] = 'pipelined_request'
                     raise ProtocolError("pipelined requests are not supported")
             _remaining(deadline)
             if "error" in job:
+                state['cause'] = ('model_error' if job['phase'] == 'model' else
+                                  'timeout' if isinstance(job['error'], TimeoutError) else 'decode_error')
                 raise job["error"]
             if "prediction" not in job:
                 raise OSError("inference cancelled")
             return job["prediction"]
         finally:
+            state['phase'] = job['phase']
+            if 'model_started' in job:
+                state['model_elapsed_ms'] = round(job.get('model_ms', (time.monotonic() - job['model_started']) * 1000), 3)
+            if 'model_ms' in job:
+                state['completed_model_calls'] += 1
+                state['model_total_ms'] += job['model_ms']
+                state['model_max_ms'] = max(state['model_max_ms'], job['model_ms'])
             job["cancelled"].set()
 
     def close(self):
@@ -281,7 +379,9 @@ def main(argv=None):
         predictor = load_predictor(args.model)
     else:
         predictor = _FixedPredictor(args.test_target)
-    server = InferenceServer(predictor, args.bind, args.port, key, args.timeout)
+    from forza_ai.inference_logging import InferenceLog
+    event_log = InferenceLog()
+    server = InferenceServer(predictor, args.bind, args.port, key, args.timeout, event_log=event_log)
     try:
         server.start()
         label = "CNN model" if args.model is not None else "FIXED TARGET TEST (not a driving model)"
@@ -292,7 +392,10 @@ def main(argv=None):
     except KeyboardInterrupt:
         return 0
     finally:
-        server.close()
+        try:
+            server.close()
+        finally:
+            event_log.close()
 
 
 if __name__ == "__main__":

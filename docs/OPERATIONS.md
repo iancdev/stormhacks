@@ -231,3 +231,27 @@ stale/offline. Browser elapsed time advances these checks between responses. Pol
 most 10 Hz with one request in flight; full HTTP round-trip time is conservatively
 added to snapshot age. No command lifetime is extended to keep the curve visible.
 There is no extra capture, image encoding, hardware owner, or control-loop I/O.
+# Inference connection diagnostics
+
+The inference server CLI writes best-effort JSON lines alongside its startup
+message. Events identify a process-local connection number and peer, UTC time,
+first authenticated/protocol-valid request, first prediction sent, five-second
+aggregate summaries while requests complete, and connection closure. A sent
+response is not proof the game applied it. Rates are connection-lifetime means.
+
+Closure records distinguish authentication/protocol rejection, idle receive
+timeout (no new bytes), partial-request timeout, peer EOF/reset, busy model,
+decode failure, model failure and server shutdown. `phase` identifies the
+operation at failure; raw exception arguments, keys, HMACs, images, session
+nonces and predictions are never logged. A client that rejects the server's
+hello may simply appear as EOF; the server cannot know that client's reason.
+
+`completed_model_calls` and model mean/max cover observed completed calls;
+`model_elapsed_ms` also reports elapsed work at a model timeout/disconnect,
+not the eventual duration of a still-running call. Request timing includes
+waiting for bytes. Existing protocol, model outputs and timeouts are unchanged.
+
+Formatting and output run on a daemon with a bounded 256-event queue. Overflow
+or output failure drops diagnostics (`log_dropped`) rather than blocking model
+or transport work. Shutdown waits at most 250 ms for logging; a blocked sink
+can lose final records. These logs cannot reconstruct failures before deployment.
