@@ -23,46 +23,94 @@ python -m pip install -e '.[analytics]'
 forza-analytics init
 ```
 
-`init` is idempotent. It creates:
+`init` is idempotent and safe to rerun after upgrades. It creates:
 
-- `wheel_samples`: hypertable keyed by `time`, with `session`, `source`
-  (`recorder` or `runtime`), `mode`, measured `steer_deg`, controller
-  `target_deg`, policy `predicted_deg`, `torque`, `speed_mps`, pedals,
-  `race_on`, and `obs_age_ms`. Compression policy after one day.
+- `wheel_samples`: hypertable keyed by `time`, with `session`, `source`,
+  `mode` (`manual`/`assist`/`takeover`/`fault`), measured `steer_deg`,
+  controller `target_deg`, policy `predicted_deg`, `torque`, `speed_mps`,
+  pedals, `race_on`, `obs_age_ms`, `yaw_rate`, `gear`, `rpm`, `game_ms`.
+  Columns a source does not provide are null. Compression policy after one day.
+- `control_events`: hypertable of control hand-offs from stream-v1 sessions
+  (`control_mode`, `training_mode`, `expert`, `reason`). This is the
+  authoritative takeover record.
+- `run_reports`: one row per runtime run from `--run-report` JSON
+  (`actuation`, mode durations, interventions per assisted minute, tracking
+  RMSE, route markers, error) plus the full document as JSONB.
 - `stability_1m`: continuous aggregate per session, source, and one-minute
   bucket with mean absolute steering, steering jitter, tracking error,
   takeover/assist sample counts, and speed.
 
 ## Load data
 
+There are three real data sources. Each `source` value marks where rows came from.
+
+| Source | Produced by | Command |
+| --- | --- | --- |
+| `recorder` | Standalone `python record.py record` human laps: `meta.json`, `labels.csv`, `frames/` | `load-recording DIR` |
+| `session` | Integrated runtime recording `forza_ai.runtime --record-session DIR` (stream-v1: `metadata.json`, `wheel.csv`, `telemetry.csv`, `events.csv`) | `load-session DIR` |
+| run report | `forza_ai.runtime --run-report FILE.json` summary of any run | `load-report FILE --session NAME` |
+| `runtime` | `--status-csv` tick log; finite test runs only, refused for unlimited runs | `load-run FILE` |
+
 ```sh
-# Human lap from record.py (meta.json, labels.csv, frames/)
+# Human lap from the standalone recorder
 forza-analytics load-recording data/recordings/20261003_161200
 
-# Controller or AI run from `python -m forza_ai.runtime ... --status-csv runs/shadow.csv`
-forza-analytics load-run runs/shadow.csv --session shadow-v1
+# AI run with human corrections, recorded by the runtime itself, plus its summary
+forza-analytics load-session data/sessions/assist-001 --session assist-v1
+forza-analytics load-report runs/assist-001/report.json --session assist-v1
 ```
 
-Reloading a session replaces its rows, so repeated loads are safe; `--append`
-keeps existing rows. Recorder rows are anchored to the session's
-`YYYYMMDD_HHMMSS` directory name in local time; runtime rows are anchored so the
-last tick lands on the CSV modification time (or `--end-time`). Both sources use
-relative or monotonic clocks, so these wall-clock times are for charting and
-grouping, not cross-machine comparison.
+Use the same `--session` name for a run's session and report so they line up.
+Reloading a session replaces its rows (and its control events), so repeated
+loads are safe; `--append` keeps existing rows. Reloading a report replaces it.
+
+Details and limits:
+
+- `load-recording` requires the original twelve `labels.csv` columns as a
+  prefix; the newer diagnostic columns (`yaw_rate`, `gear`, car fields) are
+  accepted and `yaw_rate`/`gear` are stored. Every row is `mode = manual`.
+- `load-session` refuses a session whose `metadata.json` is not
+  `completed: true` unless `--allow-incomplete` is given. `wheel.csv` is the
+  sample stream; its `control_mode` column is the *training label* (the
+  recorder writes every non-expert sample as `assist`), so the stored `mode`
+  is the true mode from the latest preceding `events.csv` entry. Telemetry is
+  joined causally (latest sample at or before each wheel timestamp). Stream-v1
+  does not log the policy target, so `target_deg`/`tracking_err_deg` are null
+  for these rows; use `run_reports.tracking_rmse_deg` instead.
+- `load-report` flattens the runtime summary; `actuation` is `motor` or
+  `direct_vjoy`. Do not compare interventions or tracking across actuation
+  modes: in direct-vJoy mode no motor holds the wheel and turning past the
+  override angle counts as a takeover.
+- Wall-clock times: recorder rows are anchored to the `YYYYMMDD_HHMMSS`
+  directory name in local time; session and status rows are anchored so the
+  last sample lands on the file modification time (or `--end-time`). All
+  sources use relative or monotonic clocks, so these times are for charting
+  and grouping, never cross-machine comparison.
 
 ## Report
 
 ```sh
-forza-analytics report            # per-session summary and per-minute rollup
-forza-analytics report --events   # also list each takeover onset in AI runs
+forza-analytics report                      # runs, per-session summary, per-minute rollup
+forza-analytics report --events             # also control hand-offs and inferred takeover onsets
+forza-analytics report --session assist-v1  # restrict per-minute and event listings
 ```
 
 The SQL behind the report lives in `src/forza_ai/analytics/report.py` and can be
-pasted into the Tiger Console SQL editor or any Postgres client. Takeover
-percentage and `takeover_samples` per minute are the intervention metric; a
-lower `tracking_err_deg` means the PD controller follows the model's target
-more closely; comparing `steer_jitter_deg` between a `recorder` human lap and a
-`runtime` AI run on the same route shows steering stability.
+pasted into the Tiger Console SQL editor or any Postgres client.
 
-Tests in `tests/analytics` cover CSV conversion and schema parsing with fakes
-and need no database.
+- **Interventions:** `run_reports.per_assist_min` is the runtime's own count of
+  explicit human takeovers per assisted minute. `takeover_pct` and
+  `takeover_samples` measure time spent in takeover from the samples.
+  `control_events` lists each hand-off with its reason.
+- **Tracking:** `tracking_err_deg` (status CSV) or `run_reports.tracking_rmse_deg`
+  shows how closely the wheel followed the model's target. Lower is better.
+- **Stability:** compare `steer_jitter_deg` between a `recorder` human lap and a
+  `session` AI run on the same route.
+- **Model comparison:** load each model's run under its own session name; the
+  Runs table then reads as a leaderboard.
+
+Tests in `tests/analytics` cover CSV/JSON conversion, the causal joins, and
+schema parsing with fakes and need no database. The live path was exercised
+against a Tiger Cloud free service with a synthetic `record.py` lap, a stream-v1
+session written by `forza_ai.recording.SessionRecorder`, and a `--run-report`
+from the simulated runtime.
