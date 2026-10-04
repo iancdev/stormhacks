@@ -384,8 +384,8 @@ def visual_status(**changes):
 def test_prediction_curve_sign_and_controls_are_distinct():
     right = client(f'predictionVisual({json.dumps(visual_status())})')
     left = client(f'predictionVisual({json.dumps(visual_status(predicted_angle_deg=-45))})')
-    assert right['path'].endswith('440 25')
-    assert left['path'].endswith('280 25')
+    assert right['path'].endswith('665 40')      # HUD view: 500 + 45/90 * 330
+    assert left['path'].endswith('335 40')
     assert (right['angle'], right['throttle'], right['physicalAngle'], right['physicalThrottle'], right['physicalBrake']) == (45, 40, -10, 20, 10)
 
 
