@@ -147,6 +147,20 @@ H4 also assumes ~10 ms sample spacing and pairs rows across non-contiguous
 human segments, so treat it as approximate. Verified on a simulated session with
 a planted 0.75x understeer: H1 reported `human_over_ai_ratio` 1.33.
 
+## Demo chart
+
+```sh
+python scripts/analytics_chart.py --ai-session SESSION --out docs/assets/tiger-analytics.png
+```
+
+Top panel: measured wheel angle against the AI's predicted angle for one AI
+session, with human takeovers shaded from `control_events`. Bottom panel:
+`stability_1m` takeover seconds per minute and steering jitter for every loaded
+session. The committed image was rendered from simulated sessions, not a real
+drive.
+
+![Tiger Data analytics chart](assets/tiger-analytics.png)
+
 Tests in `tests/analytics` cover CSV/JSON conversion, the causal joins, and
 schema parsing with fakes and need no database. The live path was exercised
 against a Tiger Cloud free service with a synthetic `record.py` lap, a stream-v1
