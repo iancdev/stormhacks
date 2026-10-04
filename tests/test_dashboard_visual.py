@@ -248,3 +248,125 @@ def test_narrow_plot_time_ticks_remain_compact_and_do_not_mutate_history():
             {"timestamp_ns": 1_100_000_000, "actual_angle_deg": 2}]
     outcome = client(f"(()=>{{const rows={json.dumps(rows)};chartData(rows,['actual_angle_deg'],{{width:350}});return rows;}})()")
     assert outcome == rows
+
+
+def timed_client(body):
+    """Run served client code with a deterministic clock and real promise jobs."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise dashboard client behavior")
+    script = re.search(r"<script>(.*?)</script>", _PAGE, re.S)[1]
+    event_handlers = script.split("if(typeof document!=='undefined'){")[1].split(
+        "document.querySelectorAll('[data-series]')"
+    )[0]
+    clock = """
+let clockMs=0,nextTimer=1;
+const timers=new Map(),performance={now:()=>clockMs};
+function setTimeout(callback,delay){const id=nextTimer++;timers.set(id,{callback,at:clockMs+delay});return id;}
+function clearTimeout(id){timers.delete(id);}
+async function settle(){for(let i=0;i<30;i++)await Promise.resolve();}
+async function advance(ms){
+    const until=clockMs+ms;
+    while(true){
+        const entry=[...timers].filter(([,t])=>t.at<=until).sort((a,b)=>a[1].at-b[1].at)[0];
+        if(!entry)break;
+        const [id,timer]=entry;timers.delete(id);clockMs=timer.at;timer.callback();await settle();
+    }
+    clockMs=until;await settle();
+}
+"""
+    runner = r"""
+const fs=require('fs'),vm=require('vm'),p=JSON.parse(fs.readFileSync(0,'utf8'));
+vm.runInNewContext(p.clock+p.script+'\n;(async()=>{'+p.body+'})()',
+    {AbortController,eventHandlers:p.event_handlers})
+    .then(result=>process.stdout.write(JSON.stringify(result)))
+    .catch(error=>{console.error(error);process.exitCode=1;});
+"""
+    result = subprocess.run([node, "-e", runner], input=json.dumps(dict(
+        clock=clock, script=script, body=body, event_handlers=event_handlers)),
+        capture_output=True, text=True, check=True, timeout=5)
+    assert result.stdout, "Client promise never settled after its deadline"
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize("stall", ["fetch", "body"])
+def test_status_poll_deadline_disables_controls_and_retries_after_stalled_io(stall):
+    result = timed_client("const stall=" + json.dumps(stall) + ";" + """
+const fresh={status:{timestamp_ns:1,mode:'manual',route_active:false},snapshot_age_ms:0,
+    stale:false,controls:{allow_arm:true}};
+let calls=0,bodyCalls=0,signals=[],renders=[];
+globalThis.fetch=async(url,options)=>{
+    calls++;signals.push(options.signal);
+    if(calls===1&&stall==='fetch')return new Promise(()=>{});
+    return {ok:true,json:async()=>{bodyCalls++;return calls===1?new Promise(()=>{}):fresh;}};
+};
+render=(data,isOffline=false)=>{
+    lastData=data;offline=isOffline;
+    renders.push({offline,isStale:data.stale,view:viewState(data,isOffline)});
+};
+lastData=fresh;lastReceivedAt=0;
+const first=refresh();await settle();
+await advance(499);checkFreshness();const before=viewState(lastData,offline);
+await advance(1);checkFreshness();const stale=viewState(lastData,offline);
+await advance(500);await first;const failed=renders[renders.length-1];
+const retryDelays=[...timers.values()].map(t=>t.at-clockMs);
+checkFreshness();const stillOffline=offline;
+await advance(250);const recovered=renders[renders.length-1];
+return {before,stale,failed,retryDelays,stillOffline,recovered,calls,bodyCalls,
+    firstAborted:signals[0].aborted,lastReceivedAt};
+""")
+    assert result["before"]["arm"] and result["before"]["startRoute"]
+    assert result["stale"]["kind"] == "stale"
+    assert not result["stale"]["arm"] and not result["stale"]["startRoute"]
+    assert result["failed"]["offline"] and result["firstAborted"]
+    assert not result["failed"]["view"]["arm"]
+    assert not result["failed"]["view"]["startRoute"]
+    assert result["retryDelays"] == [250]
+    assert result["stillOffline"]
+    assert not result["recovered"]["offline"] and not result["recovered"]["isStale"]
+    assert result["recovered"]["view"]["arm"] and result["recovered"]["view"]["startRoute"]
+    assert result["calls"] == 2
+    assert result["bodyCalls"] == (1 if stall == "fetch" else 2)
+    assert result["lastReceivedAt"] == 1250
+
+
+def test_client_freshness_includes_server_age_and_preserves_offline_state():
+    result = timed_client("""
+let renders=[];
+render=(data,isOffline=false)=>{lastData=data;offline=isOffline;renders.push(data.snapshot_age_ms);};
+lastData={status:{mode:'assist'},snapshot_age_ms:350,stale:false,controls:{allow_arm:false}};
+lastReceivedAt=0;
+await advance(149);checkFreshness();const before=viewState(lastData,offline);
+await advance(1);checkFreshness();const expired=viewState(lastData,offline);
+offline=true;await advance(500);checkFreshness();
+return {before,expired,renders,offline};
+""")
+    assert result["before"]["kind"] == "assist"
+    assert result["expired"]["kind"] == "stale"
+    assert result["renders"] == [500]
+    assert result["offline"]
+
+
+@pytest.mark.parametrize("stall", ["fetch", "body"])
+def test_event_timeout_reports_unconfirmed_delivery_instead_of_not_delivered(stall):
+    result = timed_client("const stall=" + json.dumps(stall) + ";" + """
+let click,signal,feedback=[];
+const button={dataset:{event:'arm'},addEventListener:(event,handler)=>{click=handler;}};
+globalThis.document={querySelectorAll:()=>[button],getElementById:()=>({})};
+commandFeedback=(button,message,error=false)=>feedback.push({message,error});
+globalThis.fetch=async(url,options)=>{
+    signal=options.signal;
+    if(stall==='fetch')return new Promise(()=>{});
+    return {ok:true,json:()=>new Promise(()=>{})};
+};
+lastData={status:{timestamp_ns:1,mode:'manual'},stale:false,controls:{allow_arm:true}};
+eval(eventHandlers);
+const request=click();await settle();await advance(1000);await request;
+return {feedback,aborted:signal.aborted,pending:pendingAction};
+""")
+    assert result["aborted"] and result["pending"] is None
+    message = result["feedback"][-1]
+    assert message["error"]
+    assert "Delivery not confirmed" in message["message"]
+    assert "not delivered" not in message["message"]
+    assert "runtime state" in message["message"]
