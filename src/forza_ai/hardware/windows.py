@@ -52,7 +52,12 @@ class WindowsAdapter:
         button_map: Mapping[int, int] | None = None,
         vjoy_device_id: int = 1,
         use_motor: bool = True,
+        use_vjoy: bool = True,
     ):
+        # use_vjoy=False (observe-only shadow tests while Forza reads the TMX
+        # directly): never acquire or write vJoy, so Forza doesn't get a second,
+        # duplicated controller that it keeps switching to.
+        self.use_vjoy = bool(use_vjoy)
         # use_motor=False (direct-vJoy fallback): never open SDL haptics, so the
         # fallback works even when the motor/FFB path is what failed. Only zero
         # torque is then accepted.
@@ -97,7 +102,8 @@ class WindowsAdapter:
             self._vjoy = importlib.import_module("pyvjoy")
             self._sdk = importlib.import_module("pyvjoy._sdk")
             self._open_sdl()
-            self._open_vjoy()
+            if self.use_vjoy:
+                self._open_vjoy()
         except BaseException:
             # Includes KeyboardInterrupt and pyvjoy's SystemExit on DLL failure.
             try:
@@ -264,6 +270,8 @@ class WindowsAdapter:
 
     def write_virtual_state(self, state: WheelState) -> None:
         self._ensure_open()
+        if not self.use_vjoy:
+            return
         if not state.connected:
             self._reset_virtual()
             return

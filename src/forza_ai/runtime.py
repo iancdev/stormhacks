@@ -481,7 +481,12 @@ def main(argv=None):
                              "(motor/haptics never opened; Forza must use the vJoy wheel)")
     parser.add_argument("--override-deg", type=float, default=20.0,
                         help="--direct-vjoy only: turning the wheel past this many degrees takes over")
+    parser.add_argument("--no-vjoy", action="store_true",
+                        help="observe only, for --shadow while Forza reads the TMX directly: never acquire or "
+                             "write vJoy (otherwise Forza sees a duplicate controller) and never open the motor")
     args = parser.parse_args(argv)
+    if args.no_vjoy and not args.shadow:
+        parser.error("--no-vjoy is only for --shadow tests; driving needs vJoy")
     live_mode = bool(args.model or args.inference_host)
     needs_camera = live_mode or args.record_session is not None
     duration = args.duration if args.duration is not None else (0 if needs_camera else 12 if args.sweep else 5)
@@ -559,7 +564,8 @@ def main(argv=None):
             parser.error("Windows runs require --takeover-button with your verified SDL button index")
         from forza_ai.hardware import WindowsAdapter
         adapter = WindowsAdapter(torque_limit=args.torque_limit, button_map=mapping,
-                                 use_motor=not args.direct_vjoy)
+                                 use_motor=not (args.direct_vjoy or args.no_vjoy),
+                                 use_vjoy=not args.no_vjoy)
     else:
         adapter = SimulatedAdapter(torque_limit=args.torque_limit)
     receiver = None
@@ -571,7 +577,9 @@ def main(argv=None):
         adapter.close()
         raise
     print(f"Policy: {policy.name}")
-    if args.direct_vjoy:
+    if args.no_vjoy:
+        print("Observe-only shadow test: vJoy and the wheel motor are untouched; drive with the TMX bound in Forza.")
+    elif args.direct_vjoy:
         print(f"FALLBACK direct-vJoy: AI steering goes to vJoy, the wheel motor is not used. "
               f"Turn the wheel past {args.override_deg:g} deg or press the takeover button to take over.")
     try:
